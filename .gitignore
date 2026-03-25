@@ -15,3 +15,7 @@ dist/
 
 # Undo-tree save-files
 *.~undo-tree
+
+# Kubeconfig (contains credentials)
+test-kubeconfig.yaml
+kubeconfig*
