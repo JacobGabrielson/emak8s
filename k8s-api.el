@@ -31,6 +31,8 @@
   cluster           ; k8s-cluster
   user              ; k8s-user
   server            ; string "https://host:port"
+  host              ; string
+  port              ; integer
   ca-file)          ; temp file path for the CA cert, or nil
 
 ;;; ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ Returns a `k8s-connection' struct."
          (cluster (k8s-config-resolve-cluster config))
          (user (k8s-config-resolve-user config))
          (server (k8s-cluster-server cluster))
+         (host-port (k8s--parse-url server))
          ;; Write CA cert to temp file and add to GnuTLS trust store
          (ca-pem (k8s-cluster-ca-cert-pem cluster))
          (ca-file (when ca-pem
@@ -57,6 +60,8 @@ Returns a `k8s-connection' struct."
      :cluster cluster
      :user user
      :server server
+     :host (car host-port)
+     :port (cdr host-port)
      :ca-file ca-file)))
 
 (defun k8s-get (conn path)
@@ -78,7 +83,7 @@ Returns the parsed JSON response as an alist."
          (network-security-level 'low)
          (url-http-attempt-keepalives nil)
          (url-gateway-method 'native))
-    (with-current-buffer (url-retrieve-synchronously url t nil 30)
+    (with-current-buffer (url-retrieve-synchronously url t nil 60)
       (goto-char (point-min))
       ;; Skip HTTP headers
       (re-search-forward "\n\n" nil t)
