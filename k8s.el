@@ -191,48 +191,63 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   "Alist of (DISPLAY-NAME . COMMAND) for available resource views.")
 
 ;;; ---------------------------------------------------------------------------
-;;; Resource switching (transient popup)
+;;; Company-based popup pickers
 
-(transient-define-prefix k8s-switch-resource ()
-  "Switch to a different resource view."
-  [["Workloads"
-    ("p" "Pods"         k8s-pods)
-    ("d" "Deployments"  k8s-deployments)
-    ("S" "StatefulSets" k8s-statefulsets)
-    ("D" "DaemonSets"   k8s-daemonsets)]
-   ["Batch"
-    ("j" "Jobs"         k8s-jobs)
-    ("c" "CronJobs"     k8s-cronjobs)]
-   ["Config & Network"
-    ("s" "Services"     k8s-services)
-    ("i" "Ingresses"    k8s-ingresses)
-    ("m" "ConfigMaps"   k8s-configmaps)
-    ("x" "Secrets"      k8s-secrets)]])
+(require 'company)
+
+(defvar k8s--picker-candidates nil "Candidates for current picker.")
+(defvar k8s--picker-callback nil "Callback for current picker.")
+
+(defun k8s--picker-backend (command &optional arg &rest _ignored)
+  "Company backend for k8s popup pickers."
+  (interactive (list 'interactive))
+  (cl-case command
+    (interactive (company-begin-backend 'k8s--picker-backend))
+    (prefix (and k8s--picker-candidates ""))
+    (candidates (all-completions (or arg "") k8s--picker-candidates))
+    (sorted t)
+    (no-cache t)
+    (require-match t)
+    (post-completion
+     (when k8s--picker-callback
+       (funcall k8s--picker-callback arg)))))
+
+(defun k8s--pick (candidates callback)
+  "Show a company dropdown with CANDIDATES, call CALLBACK with selection."
+  (setq k8s--picker-candidates candidates
+        k8s--picker-callback callback)
+  (unless company-mode (company-mode 1))
+  (let ((inhibit-read-only t))
+    (company-begin-backend 'k8s--picker-backend)))
 
 ;;; ---------------------------------------------------------------------------
-;;; Namespace switching (popup menu at cursor)
+;;; Resource switching
 
-(require 'wid-edit)
+(defun k8s-switch-resource ()
+  "Switch resource type via company dropdown."
+  (interactive)
+  (k8s--pick (mapcar #'car k8s--resource-types)
+             (lambda (choice)
+               (let ((cmd (cdr (assoc choice k8s--resource-types))))
+                 (when cmd (funcall cmd))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Namespace switching
 
 (defun k8s-set-namespace ()
-  "Switch namespace via popup menu at point."
+  "Switch namespace via company dropdown."
   (interactive)
   (let* ((conn (k8s--ensure-connection))
          (namespaces (k8s-list-namespaces conn))
          (names (cons "all"
                       (sort (mapcar #'k8s--resource-name
                                     (append namespaces nil))
-                            #'string<)))
-         (items (mapcar (lambda (n)
-                          (cons (if (equal n k8s--namespace)
-                                    (concat n " ●")
-                                  n)
-                                n))
-                        names))
-         (choice (widget-choose "Namespace" items)))
-    (when choice
-      (setq k8s--namespace (unless (string= choice "all") choice))
-      (revert-buffer))))
+                            #'string<))))
+    (k8s--pick names
+              (lambda (choice)
+                (setq k8s--namespace
+                      (unless (string= choice "all") choice))
+                (revert-buffer)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Header keymaps for clickable fields

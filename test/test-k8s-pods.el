@@ -17,7 +17,8 @@
                "llama-20260301.1253"
                "dash-20260221.1346"
                "transient-20260305.2144"
-               "with-editor-20260301.1317"))
+               "with-editor-20260301.1317"
+               "company-20260220.156"))
   (add-to-list 'load-path
                (expand-file-name dir (expand-file-name "~/.emacs.d/elpa"))))
 
