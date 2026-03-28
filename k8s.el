@@ -209,8 +209,14 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
     (sorted t)
     (no-cache t)
     (post-completion
-     (let ((cb k8s--picker-callback))
+     (let ((cb k8s--picker-callback)
+           (buf (current-buffer)))
        (k8s--picker-cleanup)
+       ;; Undo the text company inserted
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (let ((inhibit-read-only t))
+             (revert-buffer nil t))))
        (when cb (funcall cb arg))))))
 
 (defun k8s--picker-cleanup ()
@@ -296,6 +302,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
     (insert (propertize "Resource:  " 'font-lock-face 'k8s-dim)
             (propertize resource-type
                         'font-lock-face 'k8s-resource-name
+                        'k8s-field 'resource
                         'keymap k8s--resource-header-map
                         'mouse-face 'highlight
                         'help-echo "RET: switch resource type")
@@ -305,6 +312,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                         'font-lock-face (if k8s--namespace
                                             'k8s-namespace
                                           'k8s-dim)
+                        'k8s-field 'namespace
                         'keymap k8s--namespace-header-map
                         'mouse-face 'highlight
                         'help-echo "RET: switch namespace")
@@ -346,11 +354,11 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 (defun k8s-dwim-ret ()
   "Smart RET: if on a header field, activate it; otherwise toggle section."
   (interactive)
-  (let ((map (get-text-property (point) 'keymap)))
+  (let ((field (get-text-property (point) 'k8s-field)))
     (cond
-     ((eq map k8s--resource-header-map)
+     ((eq field 'resource)
       (call-interactively #'k8s-switch-resource))
-     ((eq map k8s--namespace-header-map)
+     ((eq field 'namespace)
       (call-interactively #'k8s-set-namespace))
      (t
       (call-interactively #'magit-section-toggle)))))
