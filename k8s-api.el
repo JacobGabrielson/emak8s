@@ -64,9 +64,26 @@ Returns a `k8s-connection' struct."
      :port (cdr host-port)
      :ca-file ca-file)))
 
+(defun k8s--do-get (url)
+  "Perform a single GET to URL, return parsed JSON or nil on failure."
+  (let ((buf (url-retrieve-synchronously url t nil 60)))
+    (when buf
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (when (re-search-forward "\n\n" nil t)
+              (condition-case nil
+                  (let* ((json-object-type 'alist)
+                         (json-array-type 'vector)
+                         (json-key-type 'symbol))
+                    (json-read))
+                (json-end-of-file nil))))
+        (kill-buffer buf)))))
+
 (defun k8s-get (conn path)
   "Perform a GET request to PATH on the K8s API via CONN.
-Returns the parsed JSON response as an alist."
+Returns the parsed JSON response as an alist.
+Retries once on transient failures (truncated response, timeout)."
   (let* ((server (k8s-connection-server conn))
          (url (concat server path))
          (user (k8s-connection-user conn))
@@ -83,17 +100,10 @@ Returns the parsed JSON response as an alist."
          (network-security-level 'low)
          (url-http-attempt-keepalives nil)
          (url-gateway-method 'native))
-    (with-current-buffer (url-retrieve-synchronously url t nil 60)
-      (goto-char (point-min))
-      ;; Skip HTTP headers
-      (re-search-forward "\n\n" nil t)
-      ;; Parse JSON
-      (let* ((json-object-type 'alist)
-             (json-array-type 'vector)
-             (json-key-type 'symbol)
-             (body (json-read)))
-        (kill-buffer)
-        body))))
+    (or (k8s--do-get url)
+        ;; Retry once on failure
+        (k8s--do-get url)
+        (error "K8s API request failed: %s" path))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Convenience functions
@@ -121,6 +131,56 @@ Returns the parsed JSON response as an alist."
   (let ((path (if namespace
                   (format "/api/v1/namespaces/%s/services" namespace)
                 "/api/v1/services")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-statefulsets (conn &optional namespace)
+  "List statefulsets via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/apis/apps/v1/namespaces/%s/statefulsets" namespace)
+                "/apis/apps/v1/statefulsets")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-daemonsets (conn &optional namespace)
+  "List daemonsets via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/apis/apps/v1/namespaces/%s/daemonsets" namespace)
+                "/apis/apps/v1/daemonsets")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-jobs (conn &optional namespace)
+  "List jobs via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/apis/batch/v1/namespaces/%s/jobs" namespace)
+                "/apis/batch/v1/jobs")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-cronjobs (conn &optional namespace)
+  "List cronjobs via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/apis/batch/v1/namespaces/%s/cronjobs" namespace)
+                "/apis/batch/v1/cronjobs")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-configmaps (conn &optional namespace)
+  "List configmaps via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/api/v1/namespaces/%s/configmaps" namespace)
+                "/api/v1/configmaps")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-secrets (conn &optional namespace)
+  "List secrets via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/api/v1/namespaces/%s/secrets" namespace)
+                "/api/v1/secrets")))
+    (cdr (assq 'items (k8s-get conn path)))))
+
+(defun k8s-list-ingresses (conn &optional namespace)
+  "List ingresses via CONN, optionally in NAMESPACE."
+  (let ((path (if namespace
+                  (format "/apis/networking.k8s.io/v1/namespaces/%s/ingresses"
+                          namespace)
+                "/apis/networking.k8s.io/v1/ingresses")))
     (cdr (assq 'items (k8s-get conn path)))))
 
 (defun k8s-get-resource (conn path)

@@ -1,8 +1,8 @@
 ;;; k8s.el --- Kubernetes UI for Emacs -*- lexical-binding: t -*-
 ;;
 ;; Main entry point for emak8s.  Provides shared infrastructure
-;; (connection, namespace filtering, faces, helpers) and a transient
-;; dispatch menu for switching between resource views.
+;; (connection, namespace filtering, faces, helpers) and views for
+;; all common Kubernetes resource types.
 ;;
 ;; Usage:
 ;;   M-x k8s
@@ -132,6 +132,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
     ("Running"   'k8s-status-running)
     ("Succeeded" 'k8s-status-running)
     ("Active"    'k8s-status-running)
+    ("Complete"  'k8s-status-running)
     ("Bound"     'k8s-status-running)
     ("Available" 'k8s-status-running)
     ("Pending"   'k8s-status-pending)
@@ -150,6 +151,68 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                table)
       (sort result (lambda (a b) (string< (car a) (car b)))))))
 
+(defun k8s--insert-labels (labels indent)
+  "Insert LABELS alist with INDENT string prefix."
+  (when labels
+    (insert (propertize (concat indent "Labels:    ") 'font-lock-face 'k8s-dim))
+    (let ((first t)
+          (pad (make-string (+ (length indent) 11) ?\s)))
+      (dolist (pair labels)
+        (unless first (insert (propertize pad 'font-lock-face 'k8s-dim)))
+        (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
+                            'font-lock-face 'k8s-dim))
+        (setq first nil)))))
+
+(defun k8s--insert-selector (selector indent)
+  "Insert SELECTOR alist with INDENT string prefix."
+  (when selector
+    (insert (propertize (concat indent "Selector:  ") 'font-lock-face 'k8s-dim))
+    (let ((first t)
+          (pad (make-string (+ (length indent) 11) ?\s)))
+      (dolist (pair selector)
+        (unless first (insert (propertize pad 'font-lock-face 'k8s-dim)))
+        (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
+                            'font-lock-face 'k8s-dim))
+        (setq first nil)))))
+
+(defun k8s--first-container-image (resource)
+  "Return the first container image from a workload RESOURCE spec."
+  (let* ((spec (cdr (assq 'spec resource)))
+         (tmpl (cdr (assq 'template spec)))
+         (pod-spec (cdr (assq 'spec tmpl)))
+         (containers (cdr (assq 'containers pod-spec))))
+    (when (and containers (> (length containers) 0))
+      (cdr (assq 'image (aref containers 0))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Resource type registry
+
+(defvar k8s--resource-types nil
+  "Alist of (DISPLAY-NAME . COMMAND) for available resource views.")
+
+;;; ---------------------------------------------------------------------------
+;;; Resource switching
+
+(defun k8s-switch-resource (type)
+  "Switch to resource view TYPE."
+  (interactive
+   (list (completing-read "Resource: "
+                          (mapcar #'car k8s--resource-types)
+                          nil t)))
+  (let ((cmd (cdr (assoc type k8s--resource-types))))
+    (when cmd (funcall cmd))))
+
+;;; ---------------------------------------------------------------------------
+;;; Header keymaps for clickable fields
+
+(defvar-keymap k8s--resource-header-map
+  "RET"       #'k8s-switch-resource
+  "<mouse-1>" #'k8s-switch-resource)
+
+(defvar-keymap k8s--namespace-header-map
+  "RET"       #'k8s-set-namespace
+  "<mouse-1>" #'k8s-set-namespace)
+
 ;;; ---------------------------------------------------------------------------
 ;;; Header / namespace display
 
@@ -166,11 +229,20 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
             user
             "\n")
     (insert (propertize "Resource:  " 'font-lock-face 'k8s-dim)
-            resource-type
+            (propertize resource-type
+                        'font-lock-face 'k8s-resource-name
+                        'keymap k8s--resource-header-map
+                        'mouse-face 'highlight
+                        'help-echo "RET: switch resource type")
             "\n")
     (insert (propertize "Namespace: " 'font-lock-face 'k8s-dim)
-            (or k8s--namespace
-                (propertize "all" 'font-lock-face 'k8s-dim))
+            (propertize (or k8s--namespace "all")
+                        'font-lock-face (if k8s--namespace
+                                            'k8s-namespace
+                                          'k8s-dim)
+                        'keymap k8s--namespace-header-map
+                        'mouse-face 'highlight
+                        'help-echo "RET: switch namespace")
             "\n\n")))
 
 (defun k8s--insert-namespace-heading (ns count)
@@ -200,10 +272,95 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 ;;; Shared keymap fragment
 
 (defvar-keymap k8s-common-map
+  "RET" #'k8s-dwim-ret
   "N" #'k8s-set-namespace
   "?" #'k8s-dispatch
   "g" #'revert-buffer
   "q" #'quit-window)
+
+(defun k8s-dwim-ret ()
+  "Smart RET: if on a header field, activate it; otherwise toggle section."
+  (interactive)
+  (let ((map (get-text-property (point) 'keymap)))
+    (cond
+     ((eq map k8s--resource-header-map)
+      (call-interactively #'k8s-switch-resource))
+     ((eq map k8s--namespace-header-map)
+      (call-interactively #'k8s-set-namespace))
+     (t
+      (call-interactively #'magit-section-toggle)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Generic refresh engine
+
+(defun k8s--generic-refresh (resource-type api-fn column-header line-fn)
+  "Refresh buffer showing RESOURCE-TYPE.
+API-FN fetches items, COLUMN-HEADER is the column titles string,
+LINE-FN inserts one item as a section."
+  (let* ((inhibit-read-only t)
+         (conn (k8s--ensure-connection))
+         (items (funcall api-fn conn k8s--namespace))
+         (grouped (k8s--group-by-namespace items)))
+    (erase-buffer)
+    (magit-insert-section (k8s-root)
+      (k8s--insert-header resource-type)
+      (insert (propertize column-header 'font-lock-face 'k8s-section-heading))
+      (insert "\n")
+      (dolist (group grouped)
+        (magit-insert-section (namespace (car group))
+          (k8s--insert-namespace-heading (car group) (length (cdr group)))
+          (dolist (item (cdr group))
+            (funcall line-fn item))
+          (insert "\n"))))
+    (let ((magit-section-cache-visibility nil))
+      (magit-section-show magit-root-section))
+    (goto-char (point-min))))
+
+;;; ---------------------------------------------------------------------------
+;;; View definition macro
+
+(defmacro k8s--define-view (name docstring api-fn column-header line-fn)
+  "Define a resource view named NAME.
+Generates: k8s--NAME-refresh, k8s-NAME-mode, k8s-NAME command.
+API-FN fetches items, COLUMN-HEADER is the header string,
+LINE-FN inserts one item."
+  (let* ((namestr (symbol-name name))
+         (display (capitalize namestr))
+         (refresh-fn (intern (format "k8s--%s-refresh" namestr)))
+         (mode-fn (intern (format "k8s-%s-mode" namestr)))
+         (mode-map (intern (format "k8s-%s-mode-map" namestr)))
+         (cmd-fn (intern (format "k8s-%s" namestr)))
+         (buf-name (format "*k8s:%s*" namestr)))
+    `(progn
+       (defun ,refresh-fn ()
+         ,(format "Refresh the %s buffer." namestr)
+         (k8s--generic-refresh ,display ,api-fn ,column-header ,line-fn))
+
+       (defvar-keymap ,mode-map
+         :parent magit-section-mode-map)
+       (map-keymap (lambda (key def)
+                     (keymap-set ,mode-map (key-description (vector key)) def))
+                   k8s-common-map)
+
+       (define-derived-mode ,mode-fn magit-section-mode
+         ,(format "K8s:%s" (capitalize namestr))
+         ,docstring
+         :interactive nil
+         :group 'k8s
+         (setq-local revert-buffer-function
+                     (lambda (_ignore-auto _noconfirm) (,refresh-fn))))
+
+       (defun ,cmd-fn ()
+         ,(format "Display %s in the current Kubernetes cluster." namestr)
+         (interactive)
+         (let ((buf (get-buffer-create ,buf-name)))
+           (with-current-buffer buf
+             (,mode-fn)
+             (k8s--ensure-connection)
+             (,refresh-fn))
+           (pop-to-buffer buf)))
+
+       (push (cons ,display #',cmd-fn) k8s--resource-types))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Transient dispatch
@@ -212,15 +369,24 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 
 (transient-define-prefix k8s-dispatch ()
   "Switch between Kubernetes resource views."
-  ["Resource views"
-   ("p" "Pods"        k8s-pods)
-   ("d" "Deployments" k8s-deployments)
-   ("s" "Services"    k8s-services)]
+  [["Workloads"
+    ("p" "Pods"         k8s-pods)
+    ("d" "Deployments"  k8s-deployments)
+    ("S" "StatefulSets" k8s-statefulsets)
+    ("D" "DaemonSets"   k8s-daemonsets)]
+   ["Batch"
+    ("j" "Jobs"         k8s-jobs)
+    ("c" "CronJobs"     k8s-cronjobs)]
+   ["Config & Network"
+    ("s" "Services"     k8s-services)
+    ("i" "Ingresses"    k8s-ingresses)
+    ("m" "ConfigMaps"   k8s-configmaps)
+    ("x" "Secrets"      k8s-secrets)]]
   ["Filter"
-   ("N" "Namespace"   k8s-set-namespace)]
+   ("N" "Namespace"     k8s-set-namespace)]
   ["Navigate"
-   ("g" "Refresh"     revert-buffer)
-   ("q" "Quit"        quit-window)])
+   ("g" "Refresh"       revert-buffer)
+   ("q" "Quit"          quit-window)])
 
 ;;;###autoload
 (defun k8s ()
@@ -228,135 +394,204 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   (interactive)
   (k8s-pods))
 
+;; Register pods (defined in k8s-pods.el) in the resource type list
+(push '("Pods" . k8s-pods) k8s--resource-types)
+
+;;; =========================================================================
+;;; Resource views
+;;; =========================================================================
+
 ;;; ---------------------------------------------------------------------------
-;;; Deployments view
-
-(defun k8s--deployment-ready-string (deploy)
-  "Return READY string like 2/3 for DEPLOY."
-  (let* ((status (cdr (assq 'status deploy)))
-         (replicas (or (cdr (assq 'replicas status)) 0))
-         (ready (or (cdr (assq 'readyReplicas status)) 0)))
-    (format "%d/%d" ready replicas)))
-
-(defun k8s--deployment-image (deploy)
-  "Return the first container image from DEPLOY spec."
-  (let* ((spec (cdr (assq 'spec deploy)))
-         (tmpl (cdr (assq 'template spec)))
-         (pod-spec (cdr (assq 'spec tmpl)))
-         (containers (cdr (assq 'containers pod-spec))))
-    (when (and containers (> (length containers) 0))
-      (cdr (assq 'image (aref containers 0))))))
+;;; Deployments
 
 (defun k8s--insert-deployment-line (deploy)
-  "Insert a single deployment summary line."
+  "Insert a deployment summary line."
   (let* ((name (k8s--resource-name deploy))
-         (ready (k8s--deployment-ready-string deploy))
+         (status (cdr (assq 'status deploy)))
+         (replicas (or (cdr (assq 'replicas status)) 0))
+         (ready (or (cdr (assq 'readyReplicas status)) 0))
          (age (k8s--age-string (k8s--resource-creation-time deploy)))
-         (image (or (k8s--deployment-image deploy) "")))
+         (image (or (k8s--first-container-image deploy) "")))
     (magit-insert-section (deployment deploy t)
       (magit-insert-heading
         (format "  %-42s %-10s %-6s %s\n"
                 (propertize name 'font-lock-face 'k8s-resource-name)
-                ready
+                (format "%d/%d" ready replicas)
                 (propertize age 'font-lock-face 'k8s-dim)
                 (propertize image 'font-lock-face 'k8s-dim)))
-      ;; Detail body
-      (k8s--insert-deployment-details deploy))))
+      (let* ((spec (cdr (assq 'spec deploy)))
+             (strategy (or (cdr (assq 'type (cdr (assq 'strategy spec)))) "?"))
+             (updated (or (cdr (assq 'updatedReplicas status)) 0))
+             (available (or (cdr (assq 'availableReplicas status)) 0))
+             (selector (cdr (assq 'matchLabels (cdr (assq 'selector spec))))))
+        (insert (propertize (format "    Strategy:  %s\n" strategy)
+                            'font-lock-face 'k8s-dim))
+        (insert (propertize (format "    Replicas:  %d desired, %d updated, %d available\n"
+                                    replicas updated available)
+                            'font-lock-face 'k8s-dim))
+        (k8s--insert-selector selector "    ")
+        (k8s--insert-labels (k8s--resource-labels deploy) "    ")
+        (insert "\n")))))
 
-(defun k8s--insert-deployment-details (deploy)
-  "Insert expanded details for DEPLOY."
-  (let* ((spec (cdr (assq 'spec deploy)))
-         (status (cdr (assq 'status deploy)))
-         (strategy (or (cdr (assq 'type (cdr (assq 'strategy spec)))) "?"))
-         (replicas (or (cdr (assq 'replicas spec)) 0))
-         (updated (or (cdr (assq 'updatedReplicas status)) 0))
-         (available (or (cdr (assq 'availableReplicas status)) 0))
-         (labels (k8s--resource-labels deploy))
-         (selector (cdr (assq 'matchLabels (cdr (assq 'selector spec))))))
-    (insert (propertize (format "    Strategy:  %s\n" strategy)
-                        'font-lock-face 'k8s-dim))
-    (insert (propertize (format "    Replicas:  %d desired, %d updated, %d available\n"
-                                replicas updated available)
-                        'font-lock-face 'k8s-dim))
-    (when selector
-      (insert (propertize "    Selector:  " 'font-lock-face 'k8s-dim))
-      (let ((first t))
-        (dolist (pair selector)
-          (unless first (insert (propertize "               " 'font-lock-face 'k8s-dim)))
-          (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
-                              'font-lock-face 'k8s-dim))
-          (setq first nil))))
-    (when labels
-      (insert (propertize "    Labels:    " 'font-lock-face 'k8s-dim))
-      (let ((first t))
-        (dolist (pair labels)
-          (unless first (insert (propertize "               " 'font-lock-face 'k8s-dim)))
-          (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
-                              'font-lock-face 'k8s-dim))
-          (setq first nil))))
-    (insert "\n")))
-
-(defun k8s--deployments-refresh ()
-  "Refresh the deployments buffer."
-  (let* ((inhibit-read-only t)
-         (conn (k8s--ensure-connection))
-         (deploys (k8s-list-deployments conn k8s--namespace))
-         (grouped (k8s--group-by-namespace deploys)))
-    (erase-buffer)
-    (magit-insert-section (k8s-deployments-root)
-      (k8s--insert-header "Deployments")
-      (insert (propertize
-               (format "  %-42s %-10s %-6s %s\n"
-                       "NAME" "READY" "AGE" "IMAGE")
-               'font-lock-face 'k8s-section-heading))
-      (insert "\n")
-      (dolist (group grouped)
-        (magit-insert-section (namespace (car group))
-          (k8s--insert-namespace-heading (car group) (length (cdr group)))
-          (dolist (deploy (cdr group))
-            (k8s--insert-deployment-line deploy))
-          (insert "\n"))))
-    (let ((magit-section-cache-visibility nil))
-      (magit-section-show magit-root-section))
-    (goto-char (point-min))))
-
-(defvar-keymap k8s-deployments-mode-map
-  :parent magit-section-mode-map)
-
-;; Merge shared keys
-(map-keymap (lambda (key def)
-              (keymap-set k8s-deployments-mode-map (key-description (vector key)) def))
-            k8s-common-map)
-
-(define-derived-mode k8s-deployments-mode magit-section-mode "K8s:Deployments"
+(k8s--define-view deployments
   "Major mode for viewing Kubernetes deployments."
-  :interactive nil
-  :group 'k8s
-  (setq-local revert-buffer-function
-              (lambda (_ignore-auto _noconfirm)
-                (k8s--deployments-refresh))))
-
-;;;###autoload
-(defun k8s-deployments ()
-  "Display deployments in the current Kubernetes cluster."
-  (interactive)
-  (let ((buf (get-buffer-create "*k8s:deployments*")))
-    (with-current-buffer buf
-      (k8s-deployments-mode)
-      (k8s--ensure-connection)
-      (k8s--deployments-refresh))
-    (pop-to-buffer buf)))
+  #'k8s-list-deployments
+  (format "  %-42s %-10s %-6s %s\n" "NAME" "READY" "AGE" "IMAGE")
+  #'k8s--insert-deployment-line)
 
 ;;; ---------------------------------------------------------------------------
-;;; Services view
+;;; StatefulSets
 
-(defun k8s--service-type (svc)
-  "Return the service type (ClusterIP, NodePort, etc.)."
-  (or (cdr (assq 'type (cdr (assq 'spec svc)))) "ClusterIP"))
+(defun k8s--insert-statefulset-line (sts)
+  "Insert a statefulset summary line."
+  (let* ((name (k8s--resource-name sts))
+         (status (cdr (assq 'status sts)))
+         (replicas (or (cdr (assq 'replicas status)) 0))
+         (ready (or (cdr (assq 'readyReplicas status)) 0))
+         (age (k8s--age-string (k8s--resource-creation-time sts)))
+         (image (or (k8s--first-container-image sts) "")))
+    (magit-insert-section (statefulset sts t)
+      (magit-insert-heading
+        (format "  %-42s %-10s %-6s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (format "%d/%d" ready replicas)
+                (propertize age 'font-lock-face 'k8s-dim)
+                (propertize image 'font-lock-face 'k8s-dim)))
+      (let* ((spec (cdr (assq 'spec sts)))
+             (policy (or (cdr (assq 'podManagementPolicy spec)) "OrderedReady"))
+             (svc-name (cdr (assq 'serviceName spec)))
+             (selector (cdr (assq 'matchLabels (cdr (assq 'selector spec))))))
+        (insert (propertize (format "    Policy:    %s\n" policy)
+                            'font-lock-face 'k8s-dim))
+        (when svc-name
+          (insert (propertize (format "    Service:   %s\n" svc-name)
+                              'font-lock-face 'k8s-dim)))
+        (k8s--insert-selector selector "    ")
+        (k8s--insert-labels (k8s--resource-labels sts) "    ")
+        (insert "\n")))))
 
-(defun k8s--service-cluster-ip (svc)
-  "Return the cluster IP of SVC."
-  (or (cdr (assq 'clusterIP (cdr (assq 'spec svc)))) ""))
+(k8s--define-view statefulsets
+  "Major mode for viewing Kubernetes statefulsets."
+  #'k8s-list-statefulsets
+  (format "  %-42s %-10s %-6s %s\n" "NAME" "READY" "AGE" "IMAGE")
+  #'k8s--insert-statefulset-line)
+
+;;; ---------------------------------------------------------------------------
+;;; DaemonSets
+
+(defun k8s--insert-daemonset-line (ds)
+  "Insert a daemonset summary line."
+  (let* ((name (k8s--resource-name ds))
+         (status (cdr (assq 'status ds)))
+         (desired (or (cdr (assq 'desiredNumberScheduled status)) 0))
+         (ready (or (cdr (assq 'numberReady status)) 0))
+         (available (or (cdr (assq 'numberAvailable status)) 0))
+         (age (k8s--age-string (k8s--resource-creation-time ds)))
+         (image (or (k8s--first-container-image ds) "")))
+    (magit-insert-section (daemonset ds t)
+      (magit-insert-heading
+        (format "  %-42s %-10s %-10s %-6s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (format "%d/%d" ready desired)
+                (propertize (format "%d" available) 'font-lock-face 'k8s-dim)
+                (propertize age 'font-lock-face 'k8s-dim)
+                (propertize image 'font-lock-face 'k8s-dim)))
+      (let* ((spec (cdr (assq 'spec ds)))
+             (selector (cdr (assq 'matchLabels (cdr (assq 'selector spec)))))
+             (node-sel (cdr (assq 'nodeSelector
+                                  (cdr (assq 'spec
+                                             (cdr (assq 'template spec))))))))
+        (when node-sel
+          (insert (propertize "    NodeSel:   " 'font-lock-face 'k8s-dim))
+          (let ((first t))
+            (dolist (pair node-sel)
+              (unless first (insert (propertize "               " 'font-lock-face 'k8s-dim)))
+              (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
+                                  'font-lock-face 'k8s-dim))
+              (setq first nil))))
+        (k8s--insert-selector selector "    ")
+        (k8s--insert-labels (k8s--resource-labels ds) "    ")
+        (insert "\n")))))
+
+(k8s--define-view daemonsets
+  "Major mode for viewing Kubernetes daemonsets."
+  #'k8s-list-daemonsets
+  (format "  %-42s %-10s %-10s %-6s %s\n" "NAME" "READY" "AVAILABLE" "AGE" "IMAGE")
+  #'k8s--insert-daemonset-line)
+
+;;; ---------------------------------------------------------------------------
+;;; Jobs
+
+(defun k8s--insert-job-line (job)
+  "Insert a job summary line."
+  (let* ((name (k8s--resource-name job))
+         (status (cdr (assq 'status job)))
+         (spec (cdr (assq 'spec job)))
+         (completions (or (cdr (assq 'completions spec)) 1))
+         (succeeded (or (cdr (assq 'succeeded status)) 0))
+         (failed (or (cdr (assq 'failed status)) 0))
+         (active (or (cdr (assq 'active status)) 0))
+         (conditions (cdr (assq 'conditions status)))
+         (phase (cond
+                 ((and conditions (> (length conditions) 0))
+                  (cdr (assq 'type (aref conditions 0))))
+                 ((> active 0) "Running")
+                 ((= succeeded completions) "Complete")
+                 (t "Pending")))
+         (age (k8s--age-string (k8s--resource-creation-time job))))
+    (magit-insert-section (job job t)
+      (magit-insert-heading
+        (format "  %-42s %-12s %-10s %-6s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (propertize phase 'font-lock-face (k8s--phase-face phase))
+                (format "%d/%d" succeeded completions)
+                (propertize age 'font-lock-face 'k8s-dim)))
+      (insert (propertize (format "    Active: %d  Succeeded: %d  Failed: %d\n"
+                                  active succeeded failed)
+                          'font-lock-face 'k8s-dim))
+      (k8s--insert-labels (k8s--resource-labels job) "    ")
+      (insert "\n"))))
+
+(k8s--define-view jobs
+  "Major mode for viewing Kubernetes jobs."
+  #'k8s-list-jobs
+  (format "  %-42s %-12s %-10s %-6s\n" "NAME" "STATUS" "COMPLETIONS" "AGE")
+  #'k8s--insert-job-line)
+
+;;; ---------------------------------------------------------------------------
+;;; CronJobs
+
+(defun k8s--insert-cronjob-line (cj)
+  "Insert a cronjob summary line."
+  (let* ((name (k8s--resource-name cj))
+         (spec (cdr (assq 'spec cj)))
+         (schedule (or (cdr (assq 'schedule spec)) "?"))
+         (suspend (if (eq (cdr (assq 'suspend spec)) t) "True" "False"))
+         (status (cdr (assq 'status cj)))
+         (active (length (or (cdr (assq 'active status)) [])))
+         (last-schedule (cdr (assq 'lastScheduleTime status)))
+         (last-age (if last-schedule (k8s--age-string last-schedule) "?")))
+    (magit-insert-section (cronjob cj t)
+      (magit-insert-heading
+        (format "  %-35s %-18s %-10s %-8s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                schedule
+                (propertize suspend 'font-lock-face
+                            (if (string= suspend "True") 'k8s-status-pending
+                              'k8s-dim))
+                (propertize (format "%d" active) 'font-lock-face 'k8s-dim)
+                (propertize last-age 'font-lock-face 'k8s-dim)))
+      (k8s--insert-labels (k8s--resource-labels cj) "    ")
+      (insert "\n"))))
+
+(k8s--define-view cronjobs
+  "Major mode for viewing Kubernetes cronjobs."
+  #'k8s-list-cronjobs
+  (format "  %-35s %-18s %-10s %-8s %s\n" "NAME" "SCHEDULE" "SUSPEND" "ACTIVE" "LAST")
+  #'k8s--insert-cronjob-line)
+
+;;; ---------------------------------------------------------------------------
+;;; Services
 
 (defun k8s--service-ports-string (svc)
   "Return a string summarizing the ports of SVC."
@@ -375,107 +610,163 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
       "")))
 
 (defun k8s--insert-service-line (svc)
-  "Insert a single service summary line."
+  "Insert a service summary line."
   (let* ((name (k8s--resource-name svc))
-         (type (k8s--service-type svc))
-         (cluster-ip (k8s--service-cluster-ip svc))
+         (spec (cdr (assq 'spec svc)))
+         (type (or (cdr (assq 'type spec)) "ClusterIP"))
+         (cluster-ip (or (cdr (assq 'clusterIP spec)) ""))
          (ports (k8s--service-ports-string svc))
          (age (k8s--age-string (k8s--resource-creation-time svc))))
     (magit-insert-section (service svc t)
       (magit-insert-heading
         (format "  %-35s %-15s %-18s %-6s %s\n"
                 (propertize name 'font-lock-face 'k8s-resource-name)
-                (propertize type 'font-lock-face (k8s--phase-face
-                                                  (if (string= type "ClusterIP")
-                                                      "Active" type)))
+                (propertize type 'font-lock-face
+                            (k8s--phase-face (if (string= type "ClusterIP")
+                                                 "Active" type)))
                 cluster-ip
                 (propertize age 'font-lock-face 'k8s-dim)
                 (propertize ports 'font-lock-face 'k8s-dim)))
-      ;; Detail body
-      (k8s--insert-service-details svc))))
+      (let ((selector (cdr (assq 'selector spec)))
+            (external-name (cdr (assq 'externalName spec))))
+        (k8s--insert-selector selector "    ")
+        (when external-name
+          (insert (propertize (format "    External:  %s\n" external-name)
+                              'font-lock-face 'k8s-dim)))
+        (k8s--insert-labels (k8s--resource-labels svc) "    ")
+        (insert "\n")))))
 
-(defun k8s--insert-service-details (svc)
-  "Insert expanded details for SVC."
-  (let* ((spec (cdr (assq 'spec svc)))
-         (selector (cdr (assq 'selector spec)))
-         (labels (k8s--resource-labels svc))
-         (external-ips (cdr (assq 'externalIPs spec)))
-         (external-name (cdr (assq 'externalName spec))))
-    (when selector
-      (insert (propertize "    Selector:  " 'font-lock-face 'k8s-dim))
-      (let ((first t))
-        (dolist (pair selector)
-          (unless first (insert (propertize "               " 'font-lock-face 'k8s-dim)))
-          (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
-                              'font-lock-face 'k8s-dim))
-          (setq first nil))))
-    (when external-name
-      (insert (propertize (format "    External:  %s\n" external-name)
-                          'font-lock-face 'k8s-dim)))
-    (when external-ips
-      (insert (propertize (format "    ExternalIPs: %s\n"
-                                  (mapconcat #'identity
-                                             (append external-ips nil) ", "))
-                          'font-lock-face 'k8s-dim)))
-    (when labels
-      (insert (propertize "    Labels:    " 'font-lock-face 'k8s-dim))
-      (let ((first t))
-        (dolist (pair labels)
-          (unless first (insert (propertize "               " 'font-lock-face 'k8s-dim)))
-          (insert (propertize (format "%s=%s\n" (car pair) (cdr pair))
-                              'font-lock-face 'k8s-dim))
-          (setq first nil))))
-    (insert "\n")))
-
-(defun k8s--services-refresh ()
-  "Refresh the services buffer."
-  (let* ((inhibit-read-only t)
-         (conn (k8s--ensure-connection))
-         (svcs (k8s-list-services conn k8s--namespace))
-         (grouped (k8s--group-by-namespace svcs)))
-    (erase-buffer)
-    (magit-insert-section (k8s-services-root)
-      (k8s--insert-header "Services")
-      (insert (propertize
-               (format "  %-35s %-15s %-18s %-6s %s\n"
-                       "NAME" "TYPE" "CLUSTER-IP" "AGE" "PORTS")
-               'font-lock-face 'k8s-section-heading))
-      (insert "\n")
-      (dolist (group grouped)
-        (magit-insert-section (namespace (car group))
-          (k8s--insert-namespace-heading (car group) (length (cdr group)))
-          (dolist (svc (cdr group))
-            (k8s--insert-service-line svc))
-          (insert "\n"))))
-    (let ((magit-section-cache-visibility nil))
-      (magit-section-show magit-root-section))
-    (goto-char (point-min))))
-
-(defvar-keymap k8s-services-mode-map
-  :parent magit-section-mode-map)
-
-(map-keymap (lambda (key def)
-              (keymap-set k8s-services-mode-map (key-description (vector key)) def))
-            k8s-common-map)
-
-(define-derived-mode k8s-services-mode magit-section-mode "K8s:Services"
+(k8s--define-view services
   "Major mode for viewing Kubernetes services."
-  :interactive nil
-  :group 'k8s
-  (setq-local revert-buffer-function
-              (lambda (_ignore-auto _noconfirm)
-                (k8s--services-refresh))))
+  #'k8s-list-services
+  (format "  %-35s %-15s %-18s %-6s %s\n" "NAME" "TYPE" "CLUSTER-IP" "AGE" "PORTS")
+  #'k8s--insert-service-line)
 
-;;;###autoload
-(defun k8s-services ()
-  "Display services in the current Kubernetes cluster."
-  (interactive)
-  (let ((buf (get-buffer-create "*k8s:services*")))
-    (with-current-buffer buf
-      (k8s-services-mode)
-      (k8s--ensure-connection)
-      (k8s--services-refresh))
-    (pop-to-buffer buf)))
+;;; ---------------------------------------------------------------------------
+;;; Ingresses
+
+(defun k8s--insert-ingress-line (ing)
+  "Insert an ingress summary line."
+  (let* ((name (k8s--resource-name ing))
+         (spec (cdr (assq 'spec ing)))
+         (status (cdr (assq 'status ing)))
+         (rules (cdr (assq 'rules spec)))
+         (hosts (if (and rules (> (length rules) 0))
+                    (mapconcat
+                     (lambda (r) (or (cdr (assq 'host r)) "*"))
+                     (append rules nil) ", ")
+                  ""))
+         (lb (cdr (assq 'ingress (cdr (assq 'loadBalancer status)))))
+         (address (if (and lb (> (length lb) 0))
+                      (or (cdr (assq 'ip (aref lb 0)))
+                          (cdr (assq 'hostname (aref lb 0)))
+                          "")
+                    ""))
+         (class (or (cdr (assq 'ingressClassName spec)) ""))
+         (age (k8s--age-string (k8s--resource-creation-time ing))))
+    (magit-insert-section (ingress ing t)
+      (magit-insert-heading
+        (format "  %-35s %-25s %-15s %-10s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (propertize hosts 'font-lock-face 'k8s-dim)
+                address
+                (propertize class 'font-lock-face 'k8s-dim)
+                (propertize age 'font-lock-face 'k8s-dim)))
+      ;; Detail: rules
+      (when rules
+        (seq-doseq (rule (append rules nil))
+          (let ((host (or (cdr (assq 'host rule)) "*"))
+                (paths (cdr (assq 'paths (cdr (assq 'http rule))))))
+            (when paths
+              (seq-doseq (path (append paths nil))
+                (let* ((p (or (cdr (assq 'path path)) "/"))
+                       (backend (cdr (assq 'backend path)))
+                       (svc (cdr (assq 'service backend)))
+                       (svc-name (or (cdr (assq 'name svc)) "?"))
+                       (port-obj (cdr (assq 'port svc)))
+                       (port-num (or (cdr (assq 'number port-obj)) "?")))
+                  (insert (propertize
+                           (format "    %s%s → %s:%s\n" host p svc-name port-num)
+                           'font-lock-face 'k8s-dim))))))))
+      (k8s--insert-labels (k8s--resource-labels ing) "    ")
+      (insert "\n"))))
+
+(k8s--define-view ingresses
+  "Major mode for viewing Kubernetes ingresses."
+  #'k8s-list-ingresses
+  (format "  %-35s %-25s %-15s %-10s %s\n" "NAME" "HOSTS" "ADDRESS" "CLASS" "AGE")
+  #'k8s--insert-ingress-line)
+
+;;; ---------------------------------------------------------------------------
+;;; ConfigMaps
+
+(defun k8s--insert-configmap-line (cm)
+  "Insert a configmap summary line."
+  (let* ((name (k8s--resource-name cm))
+         (data (cdr (assq 'data cm)))
+         (data-count (if data (length data) 0))
+         (age (k8s--age-string (k8s--resource-creation-time cm))))
+    (magit-insert-section (configmap cm t)
+      (magit-insert-heading
+        (format "  %-42s %-10s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (format "%d" data-count)
+                (propertize age 'font-lock-face 'k8s-dim)))
+      ;; Show key names (not values — they can be huge)
+      (when data
+        (insert (propertize "    Keys: " 'font-lock-face 'k8s-dim))
+        (let ((first t))
+          (dolist (pair data)
+            (unless first (insert (propertize "          " 'font-lock-face 'k8s-dim)))
+            (insert (propertize (format "%s\n" (car pair))
+                                'font-lock-face 'k8s-dim))
+            (setq first nil))))
+      (insert "\n"))))
+
+(k8s--define-view configmaps
+  "Major mode for viewing Kubernetes configmaps."
+  #'k8s-list-configmaps
+  (format "  %-42s %-10s %s\n" "NAME" "DATA" "AGE")
+  #'k8s--insert-configmap-line)
+
+;;; ---------------------------------------------------------------------------
+;;; Secrets
+
+(defun k8s--insert-secret-line (secret)
+  "Insert a secret summary line."
+  (let* ((name (k8s--resource-name secret))
+         (type (or (cdr (assq 'type secret)) "Opaque"))
+         (data (cdr (assq 'data secret)))
+         (data-count (if data (length data) 0))
+         (age (k8s--age-string (k8s--resource-creation-time secret))))
+    (magit-insert-section (secret secret t)
+      (magit-insert-heading
+        (format "  %-35s %-40s %-6s %s\n"
+                (propertize name 'font-lock-face 'k8s-resource-name)
+                (propertize type 'font-lock-face 'k8s-dim)
+                (format "%d" data-count)
+                (propertize age 'font-lock-face 'k8s-dim)))
+      ;; Show key names only (never values!)
+      (when data
+        (insert (propertize "    Keys: " 'font-lock-face 'k8s-dim))
+        (let ((first t))
+          (dolist (pair data)
+            (unless first (insert (propertize "          " 'font-lock-face 'k8s-dim)))
+            (insert (propertize (format "%s\n" (car pair))
+                                'font-lock-face 'k8s-dim))
+            (setq first nil))))
+      (insert "\n"))))
+
+(k8s--define-view secrets
+  "Major mode for viewing Kubernetes secrets."
+  #'k8s-list-secrets
+  (format "  %-35s %-40s %-6s %s\n" "NAME" "TYPE" "DATA" "AGE")
+  #'k8s--insert-secret-line)
+
+;;; ---------------------------------------------------------------------------
+;;; Finalize resource type list (reverse so display order matches definition)
+
+(setq k8s--resource-types (nreverse k8s--resource-types))
 
 (provide 'k8s)
 ;;; k8s.el ends here
