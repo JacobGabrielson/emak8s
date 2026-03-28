@@ -212,6 +212,8 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 ;;; ---------------------------------------------------------------------------
 ;;; Namespace switching (popup menu at cursor)
 
+(require 'wid-edit)
+
 (defun k8s-set-namespace ()
   "Switch namespace via popup menu at point."
   (interactive)
@@ -221,19 +223,13 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                       (sort (mapcar #'k8s--resource-name
                                     (append namespaces nil))
                             #'string<)))
-         (pos (posn-at-point))
-         (choice (x-popup-menu
-                  (list (list (car (posn-x-y pos))
-                              (cdr (posn-x-y pos)))
-                        (posn-window pos))
-                  (list "Namespace"
-                        (cons ""
-                              (mapcar (lambda (n)
-                                        (cons (if (equal n k8s--namespace)
-                                                  (concat n " ●")
-                                                n)
-                                              n))
-                                      names))))))
+         (items (mapcar (lambda (n)
+                          (cons (if (equal n k8s--namespace)
+                                    (concat n " ●")
+                                  n)
+                                n))
+                        names))
+         (choice (widget-choose "Namespace" items)))
     (when choice
       (setq k8s--namespace (unless (string= choice "all") choice))
       (revert-buffer))))
