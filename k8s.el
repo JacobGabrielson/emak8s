@@ -210,49 +210,33 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
     ("x" "Secrets"      k8s-secrets)]])
 
 ;;; ---------------------------------------------------------------------------
-;;; Namespace switching (transient popup, built dynamically)
+;;; Namespace switching (popup menu at cursor)
 
-(defun k8s--set-namespace-to (ns)
-  "Return a command that sets the namespace to NS and refreshes."
-  (lambda ()
-    (interactive)
-    (setq k8s--namespace (unless (string= ns "all") ns))
-    (revert-buffer)))
-
-(defun k8s--namespace-transient-children ()
-  "Build transient children from live namespace list."
+(defun k8s-set-namespace ()
+  "Switch namespace via popup menu at point."
+  (interactive)
   (let* ((conn (k8s--ensure-connection))
          (namespaces (k8s-list-namespaces conn))
-         (names (sort (mapcar #'k8s--resource-name (append namespaces nil))
-                      #'string<))
-         (keys "1234567890abcdefghijklmnopqrstuvwyz")
-         (i 0)
-         children)
-    ;; "all" first
-    (push (transient-parse-suffix
-           'k8s-set-namespace
-           (list "." "all" (k8s--set-namespace-to "all")))
-          children)
-    ;; One entry per namespace
-    (dolist (ns names)
-      (when (< i (length keys))
-        (push (transient-parse-suffix
-               'k8s-set-namespace
-               (list (string (aref keys i))
-                     (if (equal ns k8s--namespace)
-                         (propertize ns 'face 'transient-value)
-                       ns)
-                     (k8s--set-namespace-to ns)))
-              children)
-        (cl-incf i)))
-    (nreverse children)))
-
-(transient-define-prefix k8s-set-namespace ()
-  "Switch namespace."
-  ["Namespace"
-   :setup-children
-   (lambda (_)
-     (k8s--namespace-transient-children))])
+         (names (cons "all"
+                      (sort (mapcar #'k8s--resource-name
+                                    (append namespaces nil))
+                            #'string<)))
+         (pos (posn-at-point))
+         (choice (x-popup-menu
+                  (list (list (car (posn-x-y pos))
+                              (cdr (posn-x-y pos)))
+                        (posn-window pos))
+                  (list "Namespace"
+                        (cons ""
+                              (mapcar (lambda (n)
+                                        (cons (if (equal n k8s--namespace)
+                                                  (concat n " ●")
+                                                n)
+                                              n))
+                                      names))))))
+    (when choice
+      (setq k8s--namespace (unless (string= choice "all") choice))
+      (revert-buffer))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Header keymaps for clickable fields
