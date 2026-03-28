@@ -195,30 +195,48 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 
 (require 'company)
 
-(defvar k8s--picker-candidates nil "Candidates for current picker.")
-(defvar k8s--picker-callback nil "Callback for current picker.")
+(defvar-local k8s--picker-candidates nil "Candidates for current picker.")
+(defvar-local k8s--picker-callback nil "Callback for current picker.")
+(defvar-local k8s--picker-active nil "Non-nil while a picker is open.")
 
 (defun k8s--picker-backend (command &optional arg &rest _ignored)
   "Company backend for k8s popup pickers."
   (interactive (list 'interactive))
   (cl-case command
     (interactive (company-begin-backend 'k8s--picker-backend))
-    (prefix (and k8s--picker-candidates ""))
+    (prefix (when k8s--picker-active ""))
     (candidates (all-completions (or arg "") k8s--picker-candidates))
     (sorted t)
     (no-cache t)
-    (require-match t)
     (post-completion
-     (when k8s--picker-callback
-       (funcall k8s--picker-callback arg)))))
+     (let ((cb k8s--picker-callback))
+       (k8s--picker-cleanup)
+       (when cb (funcall cb arg))))))
+
+(defun k8s--picker-cleanup ()
+  "Restore buffer state after picker closes."
+  (setq k8s--picker-active nil
+        k8s--picker-candidates nil
+        k8s--picker-callback nil)
+  (setq buffer-read-only t))
 
 (defun k8s--pick (candidates callback)
   "Show a company dropdown with CANDIDATES, call CALLBACK with selection."
   (setq k8s--picker-candidates candidates
-        k8s--picker-callback callback)
-  (unless company-mode (company-mode 1))
-  (let ((inhibit-read-only t))
-    (company-begin-backend 'k8s--picker-backend)))
+        k8s--picker-callback callback
+        k8s--picker-active t)
+  ;; Company needs the buffer to be writable
+  (setq buffer-read-only nil)
+  ;; Restore read-only if user cancels (C-g)
+  (add-hook 'company-completion-cancelled-hook #'k8s--picker-cleanup nil t)
+  (add-hook 'company-after-completion-hook
+            (lambda (&rest _) (remove-hook 'company-completion-cancelled-hook
+                                           #'k8s--picker-cleanup t))
+            nil t)
+  (company-mode 1)
+  (let ((company-minimum-prefix-length 0)
+        (company-backends '(k8s--picker-backend)))
+    (company-complete)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Resource switching
