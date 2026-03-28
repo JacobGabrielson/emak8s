@@ -142,8 +142,80 @@
       (mapcar (lambda (c) (cdr (assq 'name c)))
               (append containers nil)))))
 
+(defvar-local k8s--log-conn nil "Connection for log buffer.")
+(defvar-local k8s--log-ns nil "Namespace for log buffer.")
+(defvar-local k8s--log-pod nil "Pod name for log buffer.")
+(defvar-local k8s--log-container nil "Container name for log buffer.")
+(defvar-local k8s--log-tail-timer nil "Timer for auto-refresh.")
+(defvar-local k8s--log-following t "Non-nil if following tail.")
+
+(defun k8s--log-refresh (&optional full)
+  "Refresh the log buffer.  If FULL, fetch all lines."
+  (let* ((inhibit-read-only t)
+         (at-end (>= (point) (point-max)))
+         (logs (k8s-pod-logs k8s--log-conn k8s--log-ns
+                             k8s--log-pod
+                             (unless full 500)
+                             k8s--log-container)))
+    (erase-buffer)
+    (insert logs)
+    (when (or at-end k8s--log-following)
+      (goto-char (point-max)))))
+
+(defun k8s--log-toggle-follow ()
+  "Toggle auto-follow mode."
+  (interactive)
+  (setq k8s--log-following (not k8s--log-following))
+  (if k8s--log-following
+      (progn
+        (unless k8s--log-tail-timer
+          (setq k8s--log-tail-timer
+                (run-with-timer 2 2 #'k8s--log-tick (current-buffer))))
+        (goto-char (point-max))
+        (message "Following"))
+    (when k8s--log-tail-timer
+      (cancel-timer k8s--log-tail-timer)
+      (setq k8s--log-tail-timer nil))
+    (message "Stopped following")))
+
+(defun k8s--log-tick (buf)
+  "Timer callback: refresh log BUF if it's still alive."
+  (if (buffer-live-p buf)
+      (with-current-buffer buf
+        (when k8s--log-following
+          (k8s--log-refresh)))
+    ;; Buffer gone, cancel timer
+    (cancel-timer k8s--log-tail-timer)))
+
+(defun k8s--log-quit ()
+  "Quit log buffer and clean up timer."
+  (interactive)
+  (when k8s--log-tail-timer
+    (cancel-timer k8s--log-tail-timer)
+    (setq k8s--log-tail-timer nil))
+  (quit-window t))
+
+(defvar-keymap k8s-log-mode-map
+  :parent special-mode-map
+  "f" #'k8s--log-toggle-follow
+  "g" (lambda () (interactive) (k8s--log-refresh))
+  "G" (lambda () (interactive) (k8s--log-refresh t))
+  "q" #'k8s--log-quit)
+
+(define-derived-mode k8s-log-mode special-mode "K8s:Log"
+  "Major mode for viewing Kubernetes pod logs.
+
+\\{k8s-log-mode-map}"
+  :group 'k8s
+  ;; Cancel timer when buffer is killed
+  (add-hook 'kill-buffer-hook
+            (lambda ()
+              (when k8s--log-tail-timer
+                (cancel-timer k8s--log-tail-timer)))
+            nil t))
+
 (defun k8s-pod-view-logs ()
-  "Show logs for the pod at point."
+  "Show tailing logs for the pod at point."
   (interactive)
   (let ((section (magit-current-section)))
     (unless (and section (eq (oref section type) 'pod))
@@ -158,31 +230,21 @@
                          (format "Container (%s): " name)
                          containers nil t nil nil (car containers))))
            (conn (k8s--ensure-connection))
-           (logs (k8s-pod-logs conn ns name 200 container))
            (buf (get-buffer-create
                  (format "*k8s:logs:%s/%s[%s]*" ns name container))))
       (with-current-buffer buf
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert logs))
-        (goto-char (point-max))
-        (special-mode)
-        (setq-local k8s--connection conn)
-        (local-set-key "g" (lambda ()
-                             (interactive)
-                             (let ((inhibit-read-only t))
-                               (erase-buffer)
-                               (insert (k8s-pod-logs conn ns name 200 container)))
-                             (goto-char (point-max))))
-        (local-set-key "G" (lambda ()
-                             (interactive)
-                             (let ((inhibit-read-only t))
-                               (erase-buffer)
-                               (insert (k8s-pod-logs conn ns name nil container)))
-                             (goto-char (point-max))))
-        (local-set-key "q" #'quit-window))
+        (k8s-log-mode)
+        (setq k8s--log-conn conn
+              k8s--log-ns ns
+              k8s--log-pod name
+              k8s--log-container container
+              k8s--log-following t)
+        (k8s--log-refresh)
+        ;; Start auto-refresh timer
+        (setq k8s--log-tail-timer
+              (run-with-timer 2 2 #'k8s--log-tick (current-buffer))))
       (pop-to-buffer buf)
-      (message "Logs for %s/%s[%s] (g=refresh, G=full, q=quit)"
+      (message "Tailing %s/%s[%s] — f=toggle follow, g=refresh, G=full, q=quit"
                ns name container))))
 
 ;;; ---------------------------------------------------------------------------
