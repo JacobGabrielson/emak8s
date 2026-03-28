@@ -133,10 +133,64 @@
     (goto-char (point-min))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Pod log viewer
+
+(defun k8s--pod-container-names (pod)
+  "Return a list of container names from POD spec."
+  (let ((containers (cdr (assq 'containers (cdr (assq 'spec pod))))))
+    (when containers
+      (mapcar (lambda (c) (cdr (assq 'name c)))
+              (append containers nil)))))
+
+(defun k8s-pod-view-logs ()
+  "Show logs for the pod at point."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (unless (and section (eq (oref section type) 'pod))
+      (user-error "Not on a pod"))
+    (let* ((pod (oref section value))
+           (name (k8s--resource-name pod))
+           (ns (k8s--resource-namespace pod))
+           (containers (k8s--pod-container-names pod))
+           (container (if (= (length containers) 1)
+                          (car containers)
+                        (completing-read
+                         (format "Container (%s): " name)
+                         containers nil t nil nil (car containers))))
+           (conn (k8s--ensure-connection))
+           (logs (k8s-pod-logs conn ns name 200 container))
+           (buf (get-buffer-create
+                 (format "*k8s:logs:%s/%s[%s]*" ns name container))))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert logs))
+        (goto-char (point-max))
+        (special-mode)
+        (setq-local k8s--connection conn)
+        (local-set-key "g" (lambda ()
+                             (interactive)
+                             (let ((inhibit-read-only t))
+                               (erase-buffer)
+                               (insert (k8s-pod-logs conn ns name 200 container)))
+                             (goto-char (point-max))))
+        (local-set-key "G" (lambda ()
+                             (interactive)
+                             (let ((inhibit-read-only t))
+                               (erase-buffer)
+                               (insert (k8s-pod-logs conn ns name nil container)))
+                             (goto-char (point-max))))
+        (local-set-key "q" #'quit-window))
+      (pop-to-buffer buf)
+      (message "Logs for %s/%s[%s] (g=refresh, G=full, q=quit)"
+               ns name container))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Major mode
 
 (defvar-keymap k8s-pods-mode-map
-  :parent magit-section-mode-map)
+  :parent magit-section-mode-map
+  "l" #'k8s-pod-view-logs)
 
 (map-keymap (lambda (key def)
               (keymap-set k8s-pods-mode-map (key-description (vector key)) def))

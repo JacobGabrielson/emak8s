@@ -191,16 +191,68 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   "Alist of (DISPLAY-NAME . COMMAND) for available resource views.")
 
 ;;; ---------------------------------------------------------------------------
-;;; Resource switching
+;;; Resource switching (transient popup)
 
-(defun k8s-switch-resource (type)
-  "Switch to resource view TYPE."
-  (interactive
-   (list (completing-read "Resource: "
-                          (mapcar #'car k8s--resource-types)
-                          nil t)))
-  (let ((cmd (cdr (assoc type k8s--resource-types))))
-    (when cmd (funcall cmd))))
+(transient-define-prefix k8s-switch-resource ()
+  "Switch to a different resource view."
+  [["Workloads"
+    ("p" "Pods"         k8s-pods)
+    ("d" "Deployments"  k8s-deployments)
+    ("S" "StatefulSets" k8s-statefulsets)
+    ("D" "DaemonSets"   k8s-daemonsets)]
+   ["Batch"
+    ("j" "Jobs"         k8s-jobs)
+    ("c" "CronJobs"     k8s-cronjobs)]
+   ["Config & Network"
+    ("s" "Services"     k8s-services)
+    ("i" "Ingresses"    k8s-ingresses)
+    ("m" "ConfigMaps"   k8s-configmaps)
+    ("x" "Secrets"      k8s-secrets)]])
+
+;;; ---------------------------------------------------------------------------
+;;; Namespace switching (transient popup, built dynamically)
+
+(defun k8s--set-namespace-to (ns)
+  "Return a command that sets the namespace to NS and refreshes."
+  (lambda ()
+    (interactive)
+    (setq k8s--namespace (unless (string= ns "all") ns))
+    (revert-buffer)))
+
+(defun k8s--namespace-transient-children ()
+  "Build transient children from live namespace list."
+  (let* ((conn (k8s--ensure-connection))
+         (namespaces (k8s-list-namespaces conn))
+         (names (sort (mapcar #'k8s--resource-name (append namespaces nil))
+                      #'string<))
+         (keys "1234567890abcdefghijklmnopqrstuvwyz")
+         (i 0)
+         children)
+    ;; "all" first
+    (push (transient-parse-suffix
+           'k8s-set-namespace
+           (list "." "all" (k8s--set-namespace-to "all")))
+          children)
+    ;; One entry per namespace
+    (dolist (ns names)
+      (when (< i (length keys))
+        (push (transient-parse-suffix
+               'k8s-set-namespace
+               (list (string (aref keys i))
+                     (if (equal ns k8s--namespace)
+                         (propertize ns 'face 'transient-value)
+                       ns)
+                     (k8s--set-namespace-to ns)))
+              children)
+        (cl-incf i)))
+    (nreverse children)))
+
+(transient-define-prefix k8s-set-namespace ()
+  "Switch namespace."
+  ["Namespace"
+   :setup-children
+   (lambda (_)
+     (k8s--namespace-transient-children))])
 
 ;;; ---------------------------------------------------------------------------
 ;;; Header keymaps for clickable fields
@@ -368,7 +420,7 @@ LINE-FN inserts one item."
 (autoload 'k8s-pods "k8s-pods" nil t)
 
 (transient-define-prefix k8s-dispatch ()
-  "Switch between Kubernetes resource views."
+  "Main emak8s command menu."
   [["Workloads"
     ("p" "Pods"         k8s-pods)
     ("d" "Deployments"  k8s-deployments)

@@ -105,6 +105,44 @@ Retries once on transient failures (truncated response, timeout)."
         (k8s--do-get url)
         (error "K8s API request failed: %s" path))))
 
+(defun k8s-get-text (conn path)
+  "Perform a GET request to PATH on the K8s API via CONN.
+Returns the raw response body as a string (for non-JSON endpoints like logs)."
+  (let* ((server (k8s-connection-server conn))
+         (url (concat server path))
+         (user (k8s-connection-user conn))
+         (url-request-extra-headers
+          (append
+           (when (k8s-user-token user)
+             (list (cons "Authorization"
+                         (format "Bearer %s" (k8s-user-token user)))))
+           '(("Accept" . "text/plain")
+             ("User-Agent" . "emak8s/0.1"))))
+         (gnutls-verify-error nil)
+         (network-security-level 'low)
+         (url-http-attempt-keepalives nil)
+         (url-gateway-method 'native)
+         (buf (url-retrieve-synchronously url t nil 60)))
+    (when buf
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (when (re-search-forward "\n\n" nil t)
+              (buffer-substring-no-properties (point) (point-max))))
+        (kill-buffer buf)))))
+
+(defun k8s-pod-logs (conn namespace name &optional tail-lines container)
+  "Fetch logs for pod NAME in NAMESPACE via CONN.
+Returns log text as a string.  TAIL-LINES limits to last N lines.
+CONTAINER specifies which container (required for multi-container pods)."
+  (let* ((params (list (format "tailLines=%d" (or tail-lines 100))))
+         (_ (when container
+              (push (format "container=%s" container) params)))
+         (query (mapconcat #'identity params "&"))
+         (path (format "/api/v1/namespaces/%s/pods/%s/log?%s"
+                       namespace name query)))
+    (or (k8s-get-text conn path) "")))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Convenience functions
 
