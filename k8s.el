@@ -191,7 +191,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   "Alist of (DISPLAY-NAME . COMMAND) for available resource views.")
 
 ;;; ---------------------------------------------------------------------------
-;;; Company-based popup pickers
+;;; Company-based popup picker (for dynamic lists like namespaces)
 
 (require 'company)
 
@@ -240,26 +240,37 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                                            #'k8s--picker-cleanup t))
             nil t)
   (company-mode 1)
-  (let ((company-minimum-prefix-length 0)
-        (company-backends '(k8s--picker-backend)))
-    (company-complete)))
+  ;; Defer to let Emacs process the read-only change before company starts
+  (run-at-time 0 nil
+               (lambda ()
+                 (let ((company-minimum-prefix-length 0)
+                       (company-backends '(k8s--picker-backend)))
+                   (company-complete)))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Resource switching
+;;; Resource switching (transient popup)
 
-(defun k8s-switch-resource ()
-  "Switch resource type via company dropdown."
-  (interactive)
-  (k8s--pick (mapcar #'car k8s--resource-types)
-             (lambda (choice)
-               (let ((cmd (cdr (assoc choice k8s--resource-types))))
-                 (when cmd (funcall cmd))))))
+(transient-define-prefix k8s-switch-resource ()
+  "Switch to a different resource view."
+  [["Workloads"
+    ("p" "Pods"         k8s-pods)
+    ("d" "Deployments"  k8s-deployments)
+    ("S" "StatefulSets" k8s-statefulsets)
+    ("D" "DaemonSets"   k8s-daemonsets)]
+   ["Batch"
+    ("j" "Jobs"         k8s-jobs)
+    ("c" "CronJobs"     k8s-cronjobs)]
+   ["Config & Network"
+    ("s" "Services"     k8s-services)
+    ("i" "Ingresses"    k8s-ingresses)
+    ("m" "ConfigMaps"   k8s-configmaps)
+    ("x" "Secrets"      k8s-secrets)]])
 
 ;;; ---------------------------------------------------------------------------
-;;; Namespace switching
+;;; Namespace switching (company dropdown)
 
 (defun k8s-set-namespace ()
-  "Switch namespace via company dropdown."
+  "Switch namespace via company dropdown at point."
   (interactive)
   (let* ((conn (k8s--ensure-connection))
          (namespaces (k8s-list-namespaces conn))
