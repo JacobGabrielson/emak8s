@@ -225,6 +225,15 @@ CONTAINER specifies which container (required for multi-container pods)."
   "GET a single resource at PATH via CONN."
   (k8s-get conn path))
 
+(defun k8s-list-events (conn namespace &optional field-selector)
+  "List events in NAMESPACE via CONN, optionally filtered by FIELD-SELECTOR."
+  (let* ((query (if field-selector
+                    (format "?fieldSelector=%s"
+                            (url-hexify-string field-selector))
+                  ""))
+         (path (format "/api/v1/namespaces/%s/events%s" namespace query)))
+    (cdr (assq 'items (k8s-get conn path)))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Error condition
 

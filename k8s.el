@@ -285,6 +285,132 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                 (revert-buffer)))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Describe resource
+
+(defun k8s--describe-value (value indent)
+  "Recursively format VALUE as readable text at INDENT level."
+  (cond
+   ((null value) (insert "nil\n"))
+   ((stringp value) (insert value "\n"))
+   ((numberp value) (insert (format "%s\n" value)))
+   ((eq value t) (insert "true\n"))
+   ((vectorp value)
+    (insert "\n")
+    (seq-doseq (item (append value nil))
+      (insert (make-string indent ?\s) "- ")
+      (k8s--describe-value item (+ indent 2))))
+   ((and (listp value) (consp (car value)))
+    ;; alist
+    (insert "\n")
+    (dolist (pair value)
+      (let ((key (format "%s" (car pair))))
+        (insert (make-string indent ?\s)
+                (propertize (concat key ": ") 'font-lock-face 'k8s-section-heading))
+        (k8s--describe-value (cdr pair) (+ indent 2)))))
+   (t (insert (format "%S\n" value)))))
+
+(defun k8s--describe-insert-events (conn ns name)
+  "Insert events for resource NAME in NS."
+  (let ((events (condition-case nil
+                    (k8s-list-events conn ns
+                                    (format "involvedObject.name=%s" name))
+                  (error nil))))
+    (when (and events (> (length events) 0))
+      (insert "\n"
+              (propertize "Events:\n" 'font-lock-face 'k8s-section-heading))
+      (insert (propertize
+               (format "  %-8s %-8s %-25s %-10s %s\n"
+                       "LAST" "COUNT" "SOURCE" "TYPE" "MESSAGE")
+               'font-lock-face 'k8s-dim))
+      (seq-doseq (ev (append events nil))
+        (let* ((last-time (or (cdr (assq 'lastTimestamp ev)) ""))
+               (count (or (cdr (assq 'count ev)) 1))
+               (source (cdr (assq 'source ev)))
+               (component (or (cdr (assq 'component source)) ""))
+               (type (or (cdr (assq 'type ev)) ""))
+               (message (or (cdr (assq 'message ev)) "")))
+          (insert (format "  %-8s %-8s %-25s %-10s %s\n"
+                          (k8s--age-string last-time)
+                          count
+                          (truncate-string-to-width component 25)
+                          (propertize type 'font-lock-face
+                                      (if (string= type "Warning")
+                                          'k8s-status-failed
+                                        'k8s-status-running))
+                          message)))))))
+
+(defun k8s-describe ()
+  "Describe the resource at point — show full details and events."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (unless (and section (oref section value)
+                 (listp (oref section value))
+                 (assq 'metadata (oref section value)))
+      (user-error "Not on a resource"))
+    (let* ((resource (oref section value))
+           (meta (cdr (assq 'metadata resource)))
+           (name (cdr (assq 'name meta)))
+           (ns (or (cdr (assq 'namespace meta)) ""))
+           (kind (or (cdr (assq 'kind resource))
+                     (symbol-name (oref section type))))
+           (conn (k8s--ensure-connection))
+           (buf (get-buffer-create
+                 (format "*k8s:describe:%s/%s*"
+                         (if (string= ns "") "cluster" ns) name))))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          ;; Header
+          (insert (propertize (format "%s: %s" kind name)
+                              'font-lock-face 'k8s-resource-name)
+                  "\n")
+          (when (not (string= ns ""))
+            (insert (propertize "Namespace: " 'font-lock-face 'k8s-dim)
+                    ns "\n"))
+          (insert "\n")
+          ;; Metadata
+          (insert (propertize "Metadata:\n" 'font-lock-face 'k8s-section-heading))
+          (dolist (key '(name namespace uid creationTimestamp))
+            (let ((val (cdr (assq key meta))))
+              (when val
+                (insert (propertize (format "  %s: " key) 'font-lock-face 'k8s-dim)
+                        (format "%s\n" val)))))
+          (let ((labels (cdr (assq 'labels meta))))
+            (when labels
+              (insert (propertize "  labels:\n" 'font-lock-face 'k8s-dim))
+              (dolist (pair labels)
+                (insert (propertize "    " 'font-lock-face 'k8s-dim)
+                        (format "%s: %s\n" (car pair) (cdr pair))))))
+          (let ((annotations (cdr (assq 'annotations meta))))
+            (when annotations
+              (insert (propertize "  annotations:\n" 'font-lock-face 'k8s-dim))
+              (dolist (pair annotations)
+                (insert (propertize "    " 'font-lock-face 'k8s-dim)
+                        (format "%s: %s\n" (car pair) (cdr pair))))))
+          ;; Spec
+          (let ((spec (cdr (assq 'spec resource))))
+            (when spec
+              (insert "\n"
+                      (propertize "Spec:" 'font-lock-face 'k8s-section-heading))
+              (k8s--describe-value spec 2)))
+          ;; Status
+          (let ((status (cdr (assq 'status resource))))
+            (when status
+              (insert "\n"
+                      (propertize "Status:" 'font-lock-face 'k8s-section-heading))
+              (k8s--describe-value status 2)))
+          ;; Events
+          (when (not (string= ns ""))
+            (k8s--describe-insert-events conn ns name)))
+        (goto-char (point-min))
+        (special-mode)
+        (local-set-key "q" #'quit-window)
+        (local-set-key "g" (lambda ()
+                             (interactive)
+                             (k8s-describe))))
+      (pop-to-buffer buf))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Header keymaps for clickable fields
 
 (defvar-keymap k8s--resource-header-map
@@ -357,6 +483,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 
 (defvar-keymap k8s-common-map
   "RET" #'k8s-dwim-ret
+  "d" #'k8s-describe
   "N" #'k8s-set-namespace
   "?" #'k8s-dispatch
   "g" #'revert-buffer
