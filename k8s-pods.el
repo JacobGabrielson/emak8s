@@ -179,11 +179,15 @@
     (message "Stopped following")))
 
 (defun k8s--log-tick (buf)
-  "Timer callback: refresh log BUF if it's still alive."
+  "Timer callback: refresh log BUF if it's still alive and visible."
   (if (buffer-live-p buf)
-      (with-current-buffer buf
-        (when k8s--log-following
-          (k8s--log-refresh)))
+      (when (get-buffer-window buf)
+        (with-current-buffer buf
+          (when k8s--log-following
+            (condition-case nil
+                (progn (k8s--log-refresh)
+                       (force-window-update (get-buffer-window buf)))
+              (error nil)))))
     ;; Buffer gone, cancel timer
     (cancel-timer k8s--log-tail-timer)))
 
