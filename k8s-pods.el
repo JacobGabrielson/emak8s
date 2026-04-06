@@ -121,6 +121,8 @@
                        "NAME" "STATUS" "READY" "RESTARTS" "AGE" "IP")
                'font-lock-face 'k8s-section-heading))
       (insert "\n")
+      ;; Mark where scrollable content begins
+      (setq k8s--header-end (point-marker))
       (dolist (group grouped)
         (magit-insert-section (namespace (car group))
           (k8s--insert-namespace-heading (car group) (length (cdr group)))
@@ -130,7 +132,14 @@
     ;; Cascade visibility: creates overlays for hidden sections
     (let ((magit-section-cache-visibility nil))
       (magit-section-show magit-root-section))
-    (goto-char (point-min))))
+    ;; After refresh, re-pin windows if header is frozen
+    (when (and k8s--header-window (window-live-p k8s--header-window))
+      (set-window-start k8s--header-window (point-min))
+      (let ((main (get-buffer-window (current-buffer))))
+        (when (and main (not (eq main k8s--header-window)))
+          (set-window-start main k8s--header-end)
+          (set-window-point main k8s--header-end))))
+    (goto-char (or k8s--header-end (point-min)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Pod log viewer
@@ -284,7 +293,8 @@
       (k8s-pods-mode)
       (k8s--ensure-connection)
       (k8s--pods-refresh))
-    (pop-to-buffer buf)))
+    (pop-to-buffer buf)
+    (k8s--setup-frozen-header)))
 
 (provide 'k8s-pods)
 ;;; k8s-pods.el ends here
