@@ -14,8 +14,11 @@
 ;;; Pod-specific helpers
 
 (defun k8s--pod-phase (pod)
-  "Return the phase (Running, Pending, etc.) of POD."
-  (cdr (assq 'phase (cdr (assq 'status pod)))))
+  "Return the phase (Running, Pending, Terminating, etc.) of POD.
+Shows Terminating when deletionTimestamp is set (like kubectl does)."
+  (if (cdr (assq 'deletionTimestamp (cdr (assq 'metadata pod))))
+      "Terminating"
+    (cdr (assq 'phase (cdr (assq 'status pod))))))
 
 (defun k8s--pod-ip (pod)
   "Return the pod IP address."

@@ -152,9 +152,10 @@ Called with one optional arg (namespace), returns a path string.")
     ("Complete"  'k8s-status-running)
     ("Bound"     'k8s-status-running)
     ("Available" 'k8s-status-running)
-    ("Pending"   'k8s-status-pending)
-    ("Failed"    'k8s-status-failed)
-    (_           'k8s-status-other)))
+    ("Pending"      'k8s-status-pending)
+    ("Terminating"  'k8s-status-failed)
+    ("Failed"       'k8s-status-failed)
+    (_              'k8s-status-other)))
 
 (defun k8s--group-by-namespace (resources)
   "Group RESOURCES (a vector) into an alist of (NAMESPACE . LIST)."
