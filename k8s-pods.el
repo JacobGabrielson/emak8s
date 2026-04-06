@@ -111,7 +111,10 @@
   "Refresh the pods buffer content."
   (let* ((inhibit-read-only t)
          (conn (k8s--ensure-connection))
-         (pods (k8s-list-pods conn k8s--namespace))
+         (pods (if (and k8s--resource-table
+                        (> (hash-table-count k8s--resource-table) 0))
+                   (vconcat (hash-table-values k8s--resource-table))
+                 (k8s-list-pods conn k8s--namespace)))
          (grouped (k8s--group-by-namespace pods)))
     (erase-buffer)
     (setq header-line-format nil)
@@ -271,7 +274,15 @@
   :group 'k8s
   (setq-local revert-buffer-function
               (lambda (_ignore-auto _noconfirm)
-                (k8s--pods-refresh))))
+                (k8s--pods-refresh)))
+  (setq mode-line-format
+        (list "%e" 'mode-line-front-space 'mode-line-mule-info
+              'mode-line-modified 'mode-line-remote " "
+              'mode-line-buffer-identification "  "
+              '(:eval (k8s--watch-mode-line)) "  "
+              'mode-line-position 'mode-line-modes
+              'mode-line-end-spaces))
+  (add-hook 'kill-buffer-hook #'k8s--watch-stop-for-buffer nil t))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Interactive command
@@ -284,6 +295,8 @@
     (with-current-buffer buf
       (k8s-pods-mode)
       (k8s--ensure-connection)
+      (setq k8s--api-path-fn
+            (lambda (ns) (k8s--list-path 'pod ns)))
       (k8s--pods-refresh))
     (pop-to-buffer buf)))
 

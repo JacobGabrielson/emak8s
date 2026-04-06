@@ -12,6 +12,7 @@
 (require 'transient)
 (require 'k8s-config)
 (require 'k8s-api)
+(require 'k8s-watch)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Customization
@@ -38,6 +39,19 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 
 (defvar-local k8s--header-end nil
   "Buffer position where the scrollable content begins (after header).")
+
+(defvar-local k8s--watch nil
+  "Active `k8s-watch' struct for this buffer, or nil.")
+
+(defvar-local k8s--resource-table nil
+  "Hash table (uid -> resource alist) maintained by the watch system.")
+
+(defvar-local k8s--watch-debounce-timer nil
+  "Timer for coalescing rapid watch events into a single re-render.")
+
+(defvar-local k8s--api-path-fn nil
+  "Function that returns the API list path for this view.
+Called with one optional arg (namespace), returns a path string.")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Faces
@@ -519,6 +533,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   "RET" #'k8s-dwim-ret
   "d" #'k8s-delete-at-point
   "i" #'k8s-describe
+  "w" #'k8s-watch-toggle
   "N" #'k8s-set-namespace
   "?" #'k8s-dispatch
   "g" #'revert-buffer
@@ -537,6 +552,101 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
       (call-interactively #'magit-section-toggle)))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Watch integration
+
+(defun k8s--watch-event-handler (type object)
+  "Handle a watch event: update resource table and schedule re-render.
+TYPE is \"ADDED\", \"MODIFIED\", \"DELETED\", or \"BOOKMARK\"."
+  (when k8s--resource-table
+    (let ((uid (cdr (assq 'uid (cdr (assq 'metadata object))))))
+      (pcase type
+        ("ADDED"    (puthash uid object k8s--resource-table))
+        ("MODIFIED" (puthash uid object k8s--resource-table))
+        ("DELETED"  (remhash uid k8s--resource-table))
+        ("BOOKMARK" nil)  ; just a keepalive
+        ("ERROR"
+         (message "emak8s watch: error event: %s"
+                  (cdr (assq 'message object))))))
+    ;; Debounced re-render
+    (when k8s--watch-debounce-timer
+      (cancel-timer k8s--watch-debounce-timer))
+    (let ((buf (current-buffer)))
+      (setq k8s--watch-debounce-timer
+            (run-at-time 0.3 nil
+                         (lambda ()
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (setq k8s--watch-debounce-timer nil)
+                               (k8s--watch-render)))))))))
+
+(defun k8s--watch-render ()
+  "Re-render the current buffer from the resource table, preserving position."
+  (let ((saved-point (point))
+        (saved-win-start (when (get-buffer-window)
+                           (window-start (get-buffer-window)))))
+    (revert-buffer nil t)
+    ;; Restore position
+    (goto-char (min saved-point (point-max)))
+    (when (and saved-win-start (get-buffer-window))
+      (set-window-start (get-buffer-window)
+                        (min saved-win-start (point-max))))))
+
+(defun k8s-watch-toggle ()
+  "Toggle watch mode for the current resource view."
+  (interactive)
+  (if k8s--watch
+      (k8s--watch-stop-for-buffer)
+    (k8s--watch-start-for-buffer)))
+
+(defun k8s--watch-start-for-buffer ()
+  "Start watching for the current buffer's resource type."
+  (unless k8s--api-path-fn
+    (user-error "This view does not support watching"))
+  (let* ((conn (k8s--ensure-connection))
+         (path (funcall k8s--api-path-fn k8s--namespace))
+         ;; Do a LIST to get current state + resourceVersion
+         (response (k8s-get conn path))
+         (rv (k8s--extract-resource-version response))
+         (items (cdr (assq 'items response))))
+    ;; Populate resource table
+    (setq k8s--resource-table (make-hash-table :test 'equal))
+    (seq-doseq (item items)
+      (let ((uid (cdr (assq 'uid (cdr (assq 'metadata item))))))
+        (when uid (puthash uid item k8s--resource-table))))
+    ;; Render from table
+    (revert-buffer nil t)
+    ;; Start watch
+    (let ((buf (current-buffer)))
+      (setq k8s--watch
+            (k8s-watch-start conn path rv
+                             (lambda (type object)
+                               (when (buffer-live-p buf)
+                                 (with-current-buffer buf
+                                   (k8s--watch-event-handler type object)))))))
+    (force-mode-line-update)
+    (message "emak8s: watching %s" path)))
+
+(defun k8s--watch-stop-for-buffer ()
+  "Stop watching for the current buffer."
+  (when k8s--watch
+    (k8s-watch-stop k8s--watch)
+    (setq k8s--watch nil)
+    (setq k8s--resource-table nil)
+    (force-mode-line-update)
+    (message "emak8s: watch stopped")))
+
+(defun k8s--watch-mode-line ()
+  "Return mode-line string indicating watch status."
+  (cond
+   ((and k8s--watch (k8s-watch-active-p k8s--watch)
+         (k8s-watch-process k8s--watch)
+         (process-live-p (k8s-watch-process k8s--watch)))
+    (propertize " [W]" 'face 'success))
+   ((and k8s--watch (k8s-watch-active-p k8s--watch))
+    (propertize " [W!]" 'face 'warning))
+   (t "")))
+
+;;; ---------------------------------------------------------------------------
 ;;; Generic refresh engine
 
 (defun k8s--generic-refresh (resource-type api-fn column-header line-fn)
@@ -545,7 +655,12 @@ API-FN fetches items, COLUMN-HEADER is the column titles string,
 LINE-FN inserts one item as a section."
   (let* ((inhibit-read-only t)
          (conn (k8s--ensure-connection))
-         (items (funcall api-fn conn k8s--namespace))
+         (items (if (and k8s--resource-table
+                         (> (hash-table-count k8s--resource-table) 0))
+                    ;; Use cached items from watch
+                    (vconcat (hash-table-values k8s--resource-table))
+                  ;; Fresh API call
+                  (funcall api-fn conn k8s--namespace)))
          (grouped (k8s--group-by-namespace items)))
     (erase-buffer)
     (setq header-line-format nil)
@@ -595,7 +710,15 @@ LINE-FN inserts one item."
          :interactive nil
          :group 'k8s
          (setq-local revert-buffer-function
-                     (lambda (_ignore-auto _noconfirm) (,refresh-fn))))
+                     (lambda (_ignore-auto _noconfirm) (,refresh-fn)))
+         (setq mode-line-format
+               (list "%e" 'mode-line-front-space 'mode-line-mule-info
+                     'mode-line-modified 'mode-line-remote " "
+                     'mode-line-buffer-identification "  "
+                     '(:eval (k8s--watch-mode-line)) "  "
+                     'mode-line-position 'mode-line-modes
+                     'mode-line-end-spaces))
+         (add-hook 'kill-buffer-hook #'k8s--watch-stop-for-buffer nil t))
 
        (defun ,cmd-fn ()
          ,(format "Display %s in the current Kubernetes cluster." namestr)
@@ -604,6 +727,8 @@ LINE-FN inserts one item."
            (with-current-buffer buf
              (,mode-fn)
              (k8s--ensure-connection)
+             (setq k8s--api-path-fn
+                   (lambda (ns) (k8s--list-path ',name ns)))
              (,refresh-fn))
            (pop-to-buffer buf)))
 

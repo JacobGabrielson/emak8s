@@ -151,6 +151,36 @@ Returns the parsed JSON response."
                   (json-end-of-file nil))))
           (kill-buffer buf))))))
 
+(defvar k8s--list-api-paths
+  '((pod         "/api/v1/pods"
+                 "/api/v1/namespaces/%s/pods")
+    (deployment  "/apis/apps/v1/deployments"
+                 "/apis/apps/v1/namespaces/%s/deployments")
+    (service     "/api/v1/services"
+                 "/api/v1/namespaces/%s/services")
+    (statefulset "/apis/apps/v1/statefulsets"
+                 "/apis/apps/v1/namespaces/%s/statefulsets")
+    (daemonset   "/apis/apps/v1/daemonsets"
+                 "/apis/apps/v1/namespaces/%s/daemonsets")
+    (job         "/apis/batch/v1/jobs"
+                 "/apis/batch/v1/namespaces/%s/jobs")
+    (cronjob     "/apis/batch/v1/cronjobs"
+                 "/apis/batch/v1/namespaces/%s/cronjobs")
+    (configmap   "/api/v1/configmaps"
+                 "/api/v1/namespaces/%s/configmaps")
+    (secret      "/api/v1/secrets"
+                 "/api/v1/namespaces/%s/secrets")
+    (ingress     "/apis/networking.k8s.io/v1/ingresses"
+                 "/apis/networking.k8s.io/v1/namespaces/%s/ingresses"))
+  "Alist mapping resource types to (ALL-PATH NAMESPACED-PATH-TEMPLATE).")
+
+(defun k8s--list-path (type &optional namespace)
+  "Return the API list path for resource TYPE, optionally in NAMESPACE."
+  (let ((entry (cdr (assq type k8s--list-api-paths))))
+    (if namespace
+        (format (cadr entry) namespace)
+      (car entry))))
+
 (defvar k8s--resource-api-paths
   '((pod         . "/api/v1/namespaces/%s/pods/%s")
     (deployment  . "/apis/apps/v1/namespaces/%s/deployments/%s")
@@ -290,6 +320,10 @@ CONTAINER specifies which container (required for multi-container pods)."
 (defun k8s-get-resource (conn path)
   "GET a single resource at PATH via CONN."
   (k8s-get conn path))
+
+(defun k8s--extract-resource-version (response)
+  "Return metadata.resourceVersion from a list RESPONSE."
+  (cdr (assq 'resourceVersion (cdr (assq 'metadata response)))))
 
 (defun k8s-list-events (conn namespace &optional field-selector)
   "List events in NAMESPACE via CONN, optionally filtered by FIELD-SELECTOR."

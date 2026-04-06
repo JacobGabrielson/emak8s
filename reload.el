@@ -11,14 +11,17 @@
 (defun reload-k8s ()
   "Unload and reload all emak8s modules."
   (interactive)
-  (dolist (feat '(k8s-pods k8s k8s-api k8s-config))
+  (dolist (feat '(k8s-pods k8s k8s-watch k8s-api k8s-config))
     (when (featurep feat) (unload-feature feat t)))
   (load "k8s-config")
   (load "k8s-api")
+  (load "k8s-watch")
   (load "k8s")
   (load "k8s-pods")
   (setq k8s-kubeconfig-path "/home/ubuntu/projects/emak8s/test-kubeconfig.yaml")
   (message "emak8s reloaded"))
+
+
 
 (reload-k8s)
 ;;; reload.el ends here
