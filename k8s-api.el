@@ -55,6 +55,7 @@ Returns a `k8s-connection' struct."
                         (insert ca-pem))
                       (cl-pushnew f gnutls-trustfiles :test #'string=)
                       f))))
+    (message "emak8s: connecting to %s:%d ..." (car host-port) (cdr host-port))
     (k8s-connection--new
      :config config
      :cluster cluster
@@ -66,7 +67,14 @@ Returns a `k8s-connection' struct."
 
 (defun k8s--do-get (url)
   "Perform a single GET to URL, return parsed JSON or nil on failure."
-  (let ((buf (url-retrieve-synchronously url t nil 60)))
+  (message "emak8s: GET %s ..." (replace-regexp-in-string "\\?.*" "" url))
+  (let* ((start (float-time))
+         (buf (url-retrieve-synchronously url t nil 60))
+         (elapsed (- (float-time) start)))
+    (message "emak8s: GET %s ... %.1fs %s"
+             (replace-regexp-in-string "\\?.*" "" url)
+             elapsed
+             (if buf "ok" "TIMEOUT"))
     (when buf
       (unwind-protect
           (with-current-buffer buf
@@ -77,7 +85,10 @@ Returns a `k8s-connection' struct."
                          (json-array-type 'vector)
                          (json-key-type 'symbol))
                     (json-read))
-                (json-end-of-file nil))))
+                (json-end-of-file
+                 (message "emak8s: GET %s ... truncated response"
+                          (replace-regexp-in-string "\\?.*" "" url))
+                 nil))))
         (kill-buffer buf)))))
 
 (defun k8s-get (conn path)
@@ -102,7 +113,9 @@ Retries once on transient failures (truncated response, timeout)."
          (url-gateway-method 'native))
     (or (k8s--do-get url)
         ;; Retry once on failure
-        (k8s--do-get url)
+        (progn
+          (message "emak8s: retrying %s ..." path)
+          (k8s--do-get url))
         (error "K8s API request failed: %s" path))))
 
 (defun k8s-get-text (conn path)
