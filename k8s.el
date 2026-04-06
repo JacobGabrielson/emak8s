@@ -37,10 +37,7 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
   "Current namespace filter.  nil means all namespaces.")
 
 (defvar-local k8s--header-end nil
-  "Buffer position where the frozen header ends and scrollable content begins.")
-
-(defvar-local k8s--header-window nil
-  "The small window showing the frozen header, or nil.")
+  "Buffer position where the scrollable content begins (after header).")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Faces
@@ -492,39 +489,6 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
                         'help-echo "RET: switch namespace")
             "\n\n")))
 
-(defun k8s--setup-frozen-header ()
-  "Split the window to freeze the header at the top.
-Call after the buffer is populated and displayed."
-  (when (and k8s--header-end (window-live-p (selected-window)))
-    ;; Clean up old header window if it exists
-    (when (and k8s--header-window (window-live-p k8s--header-window))
-      (delete-window k8s--header-window))
-    (let* ((header-lines (count-lines (point-min) k8s--header-end))
-           (main-win (selected-window))
-           (header-win (split-window main-win header-lines 'above)))
-      ;; Header window: shows top of buffer, locked
-      (set-window-buffer header-win (current-buffer))
-      (set-window-start header-win (point-min))
-      (set-window-parameter header-win 'no-other-window t)
-      (set-window-parameter header-win 'no-delete-other-windows t)
-      (set-window-dedicated-p header-win t)
-      (setq k8s--header-window header-win)
-      ;; Pin header window on scroll
-      (with-current-buffer (current-buffer)
-        (add-hook 'window-scroll-functions
-                  #'k8s--pin-header-window nil t))
-      ;; Main window: starts after header
-      (set-window-start main-win k8s--header-end)
-      (set-window-point main-win k8s--header-end)
-      (select-window main-win))))
-
-(defun k8s--pin-header-window (win _start)
-  "Keep the header window pinned to the top of the buffer."
-  (when (and k8s--header-window
-             (window-live-p k8s--header-window)
-             (eq win k8s--header-window))
-    (set-window-start k8s--header-window (point-min))))
-
 (defun k8s--insert-namespace-heading (ns count)
   "Insert a namespace section heading for NS with COUNT items."
   (magit-insert-heading
@@ -584,12 +548,12 @@ LINE-FN inserts one item as a section."
          (items (funcall api-fn conn k8s--namespace))
          (grouped (k8s--group-by-namespace items)))
     (erase-buffer)
+    ;; Sticky column header
+    (setq header-line-format
+          (propertize (concat " " column-header)
+                      'face 'k8s-section-heading))
     (magit-insert-section (k8s-root)
       (k8s--insert-header resource-type)
-      (insert (propertize column-header 'font-lock-face 'k8s-section-heading))
-      (insert "\n")
-      ;; Mark where scrollable content begins
-      (setq k8s--header-end (point-marker))
       (dolist (group grouped)
         (magit-insert-section (namespace (car group))
           (k8s--insert-namespace-heading (car group) (length (cdr group)))
@@ -598,14 +562,7 @@ LINE-FN inserts one item as a section."
           (insert "\n"))))
     (let ((magit-section-cache-visibility nil))
       (magit-section-show magit-root-section))
-    ;; After refresh, re-pin windows if header is frozen
-    (when (and k8s--header-window (window-live-p k8s--header-window))
-      (set-window-start k8s--header-window (point-min))
-      (let ((main (get-buffer-window (current-buffer))))
-        (when (and main (not (eq main k8s--header-window)))
-          (set-window-start main k8s--header-end)
-          (set-window-point main k8s--header-end))))
-    (goto-char (or k8s--header-end (point-min)))))
+    (goto-char (point-min))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; View definition macro
@@ -649,8 +606,7 @@ LINE-FN inserts one item."
              (,mode-fn)
              (k8s--ensure-connection)
              (,refresh-fn))
-           (pop-to-buffer buf)
-           (k8s--setup-frozen-header)))
+           (pop-to-buffer buf)))
 
        (push (cons ,display #',cmd-fn) k8s--resource-types))))
 
