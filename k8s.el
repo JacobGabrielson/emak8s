@@ -548,12 +548,11 @@ LINE-FN inserts one item as a section."
          (items (funcall api-fn conn k8s--namespace))
          (grouped (k8s--group-by-namespace items)))
     (erase-buffer)
-    ;; Sticky column header
-    (setq header-line-format
-          (propertize (concat " " column-header)
-                      'face 'k8s-section-heading))
+    (setq header-line-format nil)
     (magit-insert-section (k8s-root)
       (k8s--insert-header resource-type)
+      (insert (propertize column-header 'font-lock-face 'k8s-section-heading))
+      (insert "\n")
       (dolist (group grouped)
         (magit-insert-section (namespace (car group))
           (k8s--insert-namespace-heading (car group) (length (cdr group)))

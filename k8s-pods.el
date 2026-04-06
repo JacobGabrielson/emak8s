@@ -114,14 +114,14 @@
          (pods (k8s-list-pods conn k8s--namespace))
          (grouped (k8s--group-by-namespace pods)))
     (erase-buffer)
-    ;; Sticky column header
-    (setq header-line-format
-          (propertize
-           (format "  %-42s %-10s %-7s %-10s %-6s %s"
-                   "NAME" "STATUS" "READY" "RESTARTS" "AGE" "IP")
-           'face 'k8s-section-heading))
+    (setq header-line-format nil)
     (magit-insert-section (k8s-pods-root)
       (k8s--insert-header "Pods")
+      (insert (propertize
+               (format "  %-42s %-10s %-7s %-10s %-6s %s\n"
+                       "NAME" "STATUS" "READY" "RESTARTS" "AGE" "IP")
+               'font-lock-face 'k8s-section-heading))
+      (insert "\n")
       (dolist (group grouped)
         (magit-insert-section (namespace (car group))
           (k8s--insert-namespace-heading (car group) (length (cdr group)))
