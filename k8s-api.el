@@ -118,6 +118,59 @@ Retries once on transient failures (truncated response, timeout)."
           (k8s--do-get url))
         (error "K8s API request failed: %s" path))))
 
+(defun k8s-delete (conn path)
+  "Perform a DELETE request to PATH on the K8s API via CONN.
+Returns the parsed JSON response."
+  (let* ((server (k8s-connection-server conn))
+         (url (concat server path))
+         (user (k8s-connection-user conn))
+         (url-request-method "DELETE")
+         (url-request-extra-headers
+          (append
+           (when (k8s-user-token user)
+             (list (cons "Authorization"
+                         (format "Bearer %s" (k8s-user-token user)))))
+           '(("Accept" . "application/json")
+             ("User-Agent" . "emak8s/0.1"))))
+         (gnutls-verify-error nil)
+         (network-security-level 'low)
+         (url-http-attempt-keepalives nil)
+         (url-gateway-method 'native))
+    (message "emak8s: DELETE %s ..." path)
+    (let ((buf (url-retrieve-synchronously url t nil 60)))
+      (when buf
+        (unwind-protect
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (when (re-search-forward "\n\n" nil t)
+                (condition-case nil
+                    (let* ((json-object-type 'alist)
+                           (json-array-type 'vector)
+                           (json-key-type 'symbol))
+                      (json-read))
+                  (json-end-of-file nil))))
+          (kill-buffer buf))))))
+
+(defvar k8s--resource-api-paths
+  '((pod         . "/api/v1/namespaces/%s/pods/%s")
+    (deployment  . "/apis/apps/v1/namespaces/%s/deployments/%s")
+    (service     . "/api/v1/namespaces/%s/services/%s")
+    (statefulset . "/apis/apps/v1/namespaces/%s/statefulsets/%s")
+    (daemonset   . "/apis/apps/v1/namespaces/%s/daemonsets/%s")
+    (job         . "/apis/batch/v1/namespaces/%s/jobs/%s")
+    (cronjob     . "/apis/batch/v1/namespaces/%s/cronjobs/%s")
+    (configmap   . "/api/v1/namespaces/%s/configmaps/%s")
+    (secret      . "/api/v1/namespaces/%s/secrets/%s")
+    (ingress     . "/apis/networking.k8s.io/v1/namespaces/%s/ingresses/%s"))
+  "Alist mapping section types to API path templates (namespace, name).")
+
+(defun k8s-delete-resource (conn type namespace name)
+  "Delete resource of TYPE named NAME in NAMESPACE via CONN."
+  (let ((template (cdr (assq type k8s--resource-api-paths))))
+    (unless template
+      (error "Don't know how to delete %s" type))
+    (k8s-delete conn (format template namespace name))))
+
 (defun k8s-get-text (conn path)
   "Perform a GET request to PATH on the K8s API via CONN.
 Returns the raw response body as a string (for non-JSON endpoints like logs)."

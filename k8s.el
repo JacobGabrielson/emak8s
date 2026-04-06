@@ -411,6 +411,37 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
       (pop-to-buffer buf))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Delete resource
+
+(defun k8s-delete-at-point ()
+  "Delete the resource at point after confirmation."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (unless (and section (oref section value)
+                 (listp (oref section value))
+                 (assq 'metadata (oref section value)))
+      (user-error "Not on a resource"))
+    (let* ((resource (oref section value))
+           (type (oref section type))
+           (meta (cdr (assq 'metadata resource)))
+           (name (cdr (assq 'name meta)))
+           (ns (cdr (assq 'namespace meta)))
+           (conn (k8s--ensure-connection)))
+      (unless (cdr (assq type k8s--resource-api-paths))
+        (user-error "Don't know how to delete %s" type))
+      (when (yes-or-no-p (format "Delete %s %s/%s? " type ns name))
+        (message "emak8s: deleting %s %s/%s ..." type ns name)
+        (let ((result (k8s-delete-resource conn type ns name)))
+          (if (and result (equal (cdr (assq 'status result)) "Success"))
+              (message "emak8s: deleted %s %s/%s" type ns name)
+            (message "emak8s: delete %s %s/%s — %s"
+                     type ns name
+                     (or (cdr (assq 'message result))
+                         (cdr (assq 'status result))
+                         "sent")))
+          (revert-buffer))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Header keymaps for clickable fields
 
 (defvar-keymap k8s--resource-header-map
@@ -483,7 +514,8 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 
 (defvar-keymap k8s-common-map
   "RET" #'k8s-dwim-ret
-  "d" #'k8s-describe
+  "d" #'k8s-delete-at-point
+  "i" #'k8s-describe
   "N" #'k8s-set-namespace
   "?" #'k8s-dispatch
   "g" #'revert-buffer
