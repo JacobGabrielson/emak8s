@@ -62,7 +62,7 @@ Shows Terminating when deletionTimestamp is set (like kubectl does)."
          (ip (or (k8s--pod-ip pod) "")))
     (magit-insert-section (pod pod t)
       (magit-insert-heading
-        (format "  %-42s %-10s %-7s %-10s %-6s %s\n"
+        (format "  %-42s %-13s %-7s %-10s %-6s %s\n"
                 (propertize name 'font-lock-face 'k8s-resource-name)
                 (propertize (or phase "?") 'font-lock-face (k8s--phase-face phase))
                 ready
@@ -124,7 +124,7 @@ Shows Terminating when deletionTimestamp is set (like kubectl does)."
     (magit-insert-section (k8s-pods-root)
       (k8s--insert-header "Pods")
       (insert (propertize
-               (format "  %-42s %-10s %-7s %-10s %-6s %s\n"
+               (format "  %-42s %-13s %-7s %-10s %-6s %s\n"
                        "NAME" "STATUS" "READY" "RESTARTS" "AGE" "IP")
                'font-lock-face 'k8s-section-heading))
       (insert "\n")
