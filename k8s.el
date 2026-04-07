@@ -300,7 +300,11 @@ Called with one optional arg (namespace), returns a path string.")
               (lambda (choice)
                 (setq k8s--namespace
                       (unless (string= choice "all") choice))
-                (revert-buffer)))))
+                (let ((was-watching k8s--watch))
+                  (when was-watching (k8s--watch-stop-for-buffer))
+                  (setq k8s--resource-table nil)
+                  (revert-buffer)
+                  (when was-watching (k8s--watch-start-for-buffer)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Describe resource
@@ -525,7 +529,13 @@ Called with one optional arg (namespace), returns a path string.")
                              #'string<))))
      (list (completing-read "Namespace: " names nil t))))
   (setq k8s--namespace (if (string= namespace "all") nil namespace))
-  (revert-buffer))
+  ;; Clear resource table so refresh does a fresh API call
+  (let ((was-watching k8s--watch))
+    (when was-watching (k8s--watch-stop-for-buffer))
+    (setq k8s--resource-table nil)
+    (revert-buffer)
+    ;; Restart watch with new namespace scope
+    (when was-watching (k8s--watch-start-for-buffer))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Shared keymap fragment
