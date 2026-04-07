@@ -11,6 +11,10 @@
 (defun reload-k8s ()
   "Unload and reload all emak8s modules."
   (interactive)
+  ;; Kill all k8s buffers (stops watches, timers, etc.)
+  (dolist (buf (buffer-list))
+    (when (string-prefix-p "*k8s:" (buffer-name buf))
+      (kill-buffer buf)))
   (dolist (feat '(k8s-pods k8s k8s-watch k8s-api k8s-config))
     (when (featurep feat) (unload-feature feat t)))
   (load "k8s-config")
