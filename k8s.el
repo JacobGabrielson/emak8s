@@ -285,26 +285,7 @@ Called with one optional arg (namespace), returns a path string.")
     ("x" "Secrets"      k8s-secrets)]])
 
 ;;; ---------------------------------------------------------------------------
-;;; Namespace switching (company dropdown)
-
-(defun k8s-set-namespace ()
-  "Switch namespace via company dropdown at point."
-  (interactive)
-  (let* ((conn (k8s--ensure-connection))
-         (namespaces (k8s-list-namespaces conn))
-         (names (cons "all"
-                      (sort (mapcar #'k8s--resource-name
-                                    (append namespaces nil))
-                            #'string<))))
-    (k8s--pick names
-              (lambda (choice)
-                (setq k8s--namespace
-                      (unless (string= choice "all") choice))
-                (let ((was-watching k8s--watch))
-                  (when was-watching (k8s--watch-stop-for-buffer))
-                  (setq k8s--resource-table nil)
-                  (revert-buffer)
-                  (when was-watching (k8s--watch-start-for-buffer)))))))
+;;; Namespace switching (completing-read)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Describe resource
