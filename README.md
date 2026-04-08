@@ -6,100 +6,119 @@ A pure Emacs Lisp Kubernetes client and magit-style cluster browser.
 
 **No shelling out. No kubectl. No non-Elisp code.**
 
-emak8s talks directly to the Kubernetes API server over HTTPS using
-ground-up pure Elisp networking — raw TCP sockets and a from-scratch
-TLS 1.3 implementation. The entire stack, from TCP connect through
-certificate verification to JSON parsing of API responses, runs inside
-Emacs.
+emak8s talks directly to the Kubernetes API server over HTTPS. All
+kubeconfig parsing, HTTP request framing, JSON handling, and UI
+rendering is pure Elisp. TLS is provided by Emacs's built-in GnuTLS
+support (requires Emacs compiled with GnuTLS, which is the default).
+
+## What it does
+
+`M-x k8s` opens a magit-style buffer showing your cluster's pods.
+From there:
+
+| Key | Action |
+|-----|--------|
+| `?` | Dispatch menu (all resource types) |
+| `RET` on Resource: | Switch resource type (transient popup) |
+| `RET` on Namespace: | Switch namespace |
+| `N` | Switch namespace |
+| `w` | Toggle live watch (auto-updates via K8s watch API) |
+| `TAB` | Expand/collapse resource details |
+| `d` | Delete resource (with confirmation) |
+| `i` | Describe resource (full spec, status, events) |
+| `l` | View pod logs (live tailing, multi-container) |
+| `g` | Refresh |
+| `q` | Quit |
+
+### Resource views
+
+10 resource types, each with tailored column layouts and expandable
+details:
+
+- **Workloads**: Pods, Deployments, StatefulSets, DaemonSets
+- **Batch**: Jobs, CronJobs
+- **Config & Network**: Services, Ingresses, ConfigMaps, Secrets
+
+### Live updates
+
+Press `w` to start a watch. emak8s opens a persistent streaming
+connection to the K8s API and updates the display in real-time as
+resources change — pod status transitions, deployments rolling out,
+etc. The mode-line shows `[W]` when connected.
+
+### Pod logs
+
+Press `l` on a pod to tail its logs. Auto-refreshes every 2 seconds.
+For multi-container pods, prompts for which container. `f` toggles
+follow mode, `g` refreshes, `G` fetches full logs.
 
 ## Architecture
 
 ```
  emak8s (this repo)
    |
-   |-- k8s-api.el          Kubernetes REST client (HTTP/JSON over TLS)
-   |-- k8s-resource.el     Resource model: pods, deployments, services, ...
-   |-- k8s-browse.el       Magit-style interactive cluster browser
-   |-- k8s-diff.el         Resource diffing and change tracking
+   |-- k8s-config.el       Kubeconfig parser (YAML subset)
+   |-- k8s-api.el          K8s REST client (GET/DELETE, retry, streaming)
+   |-- k8s-watch.el        Watch API (persistent TLS, chunked HTTP, event dispatch)
+   |-- k8s.el              Shared UI, all resource views, transient dispatch
+   |-- k8s-pods.el         Pods view (extends k8s.el with logs, container details)
    |
-   +-- elisp-stdlib (private, ../elisp-stdlib)
+   +-- elisp-stdlib (../elisp-stdlib)
          |-- socket.el     Python-style TCP/UDP socket API
-         +-- tls/           Pure Elisp TLS 1.3 (X25519, ChaCha20, RSA, X.509)
+         +-- tls/          Pure Elisp TLS 1.3 (unused — too slow, see below)
 ```
 
-### Networking stack
+### Networking
 
-The Kubernetes API server speaks HTTPS. We reach it through:
-
-1. **socket.el** — a Python `socket` module workalike built on
-   `make-network-process`. Provides `socket-connect`, `socket-send`,
-   `socket-recv`, and friends.
-
-2. **tls/*.el** — a complete TLS 1.3 client (handshake, record layer,
-   X25519 key exchange, ChaCha20-Poly1305 / RSA, X.509 certificate
-   parsing) layered on top of socket.el.
-
-3. **k8s-api.el** (to be built) — HTTP/1.1 request framing, JSON
-   encode/decode, Kubernetes authentication (ServiceAccount tokens,
-   kubeconfig client certs), and watch/stream support — all on top of
-   the TLS session.
+- **HTTP/JSON**: `url-retrieve-synchronously` (Emacs built-in) for
+  regular API calls. Raw HTTP/1.1 over `open-network-stream` for
+  streaming watches.
+- **TLS**: Emacs's built-in GnuTLS bindings. The sibling repo has a
+  pure Elisp TLS 1.3 stack but X25519 key exchange takes >60s in
+  Emacs due to bignum dispatch overhead, so it's not practical yet.
+- **JSON**: Emacs built-in `json.el`.
 
 ### UI
 
-The interactive browser follows magit's design language:
-
-- **Section-based display** with collapsible headings
-- **Single-key commands** for navigation and actions
-- **Transient popup menus** for complex operations
-- **Real-time updates** via the Kubernetes watch API
-- **Context-sensitive actions** on the resource under point
-
-Target views:
-
-| View               | Description                                    |
-|--------------------|------------------------------------------------|
-| Cluster overview   | Namespaces, node status, resource quotas        |
-| Namespace browser  | All resources in a namespace, grouped by kind   |
-| Pod detail         | Containers, status, logs, events, exec          |
-| Deployment detail  | Replicas, rollout status, revision history      |
-| Service detail     | Endpoints, selectors, ingress routes            |
-| YAML inspector     | Raw resource YAML with syntax highlighting      |
-| Diff view          | Before/after comparison of resource changes     |
-| Log viewer         | Streaming container logs with follow mode       |
-
-## Status
-
-Early development. The stdlib networking layer (socket + TLS) is
-functional. The Kubernetes client layer is next.
+Built on `magit-section` for collapsible sections, `transient` for
+popup menus, and `company` for in-buffer dropdowns. All views derive
+from `magit-section-mode`.
 
 ## Requirements
 
-- Emacs 29+ (for `make-network-process` enhancements and native JSON)
+- Emacs 29+ compiled with GnuTLS support (the default)
+- `magit-section`, `transient`, `company` packages
 - A Kubernetes cluster with API server access
-- `elisp-stdlib` on the load path (socket.el + tls/)
+- A kubeconfig file (set `k8s-kubeconfig-path` or `$KUBECONFIG`)
 
-## Development cluster
+## Quick start
 
-A local microk8s cluster is set up for development and testing. It
-includes:
+```elisp
+;; Add to load-path
+(add-to-list 'load-path "/path/to/emak8s")
+(add-to-list 'load-path "/path/to/elisp-stdlib")
+(setq k8s-kubeconfig-path "/path/to/kubeconfig")
+(require 'k8s-pods)
 
-- **bookstore** namespace — multi-tier app (frontend, API with
-  sidecar, Redis StatefulSet, Postgres StatefulSet) with ConfigMaps,
-  Secrets, Ingress, HPA, NetworkPolicy, PDB, RBAC
-- **batch-jobs** namespace — CronJob, parallel Job, DaemonSet
-- **networking-demo** namespace — ExternalName service, headless
-  service, deny-all + allow-DNS NetworkPolicies
-- **kube-system** — dashboard, metrics-server, CoreDNS, Calico, ingress controller
+;; Then:
+;;   M-x k8s
+```
 
-Access the API:
+Or use the included `reload.el` for development:
+
+```
+M-x load-file RET /path/to/emak8s/reload.el RET
+M-x k8s
+```
+
+## Testing
+
+Tests use ERT and talk to a real cluster:
 
 ```bash
-# Get the API server endpoint and CA cert
-sudo microk8s config   # prints a full kubeconfig
-
-# Or talk to it directly
-APISERVER=$(sudo microk8s kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
-TOKEN=$(sudo microk8s kubectl -n kube-system describe secret microk8s-dashboard-token | grep 'token:' | awk '{print $2}')
+emacs --script test/test-k8s-config.el   # YAML parser, kubeconfig loading
+emacs --script test/test-k8s-api.el      # API calls against live cluster
+emacs --script test/test-k8s-pods.el     # UI views, namespace filtering
 ```
 
 ## License
