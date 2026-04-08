@@ -602,40 +602,51 @@ TYPE is \"ADDED\", \"MODIFIED\", \"DELETED\", or \"BOOKMARK\"."
       (set-window-start (get-buffer-window)
                         (min saved-win-start (point-max))))))
 
+(defvar-local k8s--watch-starting nil
+  "Non-nil while a watch start is in progress.")
+
 (defun k8s-watch-toggle ()
   "Toggle watch mode for the current resource view."
   (interactive)
-  (if k8s--watch
-      (k8s--watch-stop-for-buffer)
-    (k8s--watch-start-for-buffer)))
+  (cond
+   (k8s--watch-starting
+    (message "emak8s: watch start already in progress..."))
+   (k8s--watch
+    (k8s--watch-stop-for-buffer))
+   (t
+    (k8s--watch-start-for-buffer))))
 
 (defun k8s--watch-start-for-buffer ()
   "Start watching for the current buffer's resource type."
   (unless k8s--api-path-fn
     (user-error "This view does not support watching"))
-  (let* ((conn (k8s--ensure-connection))
-         (path (funcall k8s--api-path-fn k8s--namespace))
-         ;; Do a LIST to get current state + resourceVersion
-         (response (k8s-get conn path))
-         (rv (k8s--extract-resource-version response))
-         (items (cdr (assq 'items response))))
-    ;; Populate resource table
-    (setq k8s--resource-table (make-hash-table :test 'equal))
-    (seq-doseq (item items)
-      (let ((uid (cdr (assq 'uid (cdr (assq 'metadata item))))))
-        (when uid (puthash uid item k8s--resource-table))))
-    ;; Render from table
-    (revert-buffer nil t)
-    ;; Start watch
-    (let ((buf (current-buffer)))
-      (setq k8s--watch
-            (k8s-watch-start conn path rv
-                             (lambda (type object)
-                               (when (buffer-live-p buf)
-                                 (with-current-buffer buf
-                                   (k8s--watch-event-handler type object)))))))
-    (force-mode-line-update)
-    (message "emak8s: watching %s" path)))
+  (setq k8s--watch-starting t)
+  (message "emak8s: starting watch...")
+  (redisplay)
+  (unwind-protect
+      (let* ((conn (k8s--ensure-connection))
+             (path (funcall k8s--api-path-fn k8s--namespace))
+             (response (k8s-get conn path))
+             (rv (k8s--extract-resource-version response))
+             (items (cdr (assq 'items response))))
+        ;; Populate resource table
+        (setq k8s--resource-table (make-hash-table :test 'equal))
+        (seq-doseq (item items)
+          (let ((uid (cdr (assq 'uid (cdr (assq 'metadata item))))))
+            (when uid (puthash uid item k8s--resource-table))))
+        ;; Render from table
+        (revert-buffer nil t)
+        ;; Start watch
+        (let ((buf (current-buffer)))
+          (setq k8s--watch
+                (k8s-watch-start conn path rv
+                                 (lambda (type object)
+                                   (when (buffer-live-p buf)
+                                     (with-current-buffer buf
+                                       (k8s--watch-event-handler type object)))))))
+        (force-mode-line-update)
+        (message "emak8s: watching %s" path))
+    (setq k8s--watch-starting nil)))
 
 (defun k8s--watch-stop-for-buffer ()
   "Stop watching for the current buffer."
