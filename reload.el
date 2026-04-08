@@ -17,13 +17,17 @@
       (kill-buffer buf)))
   (dolist (feat '(k8s-pods k8s k8s-watch k8s-api k8s-config))
     (when (featurep feat) (unload-feature feat t)))
+  ;; Byte-compile everything
+  (let ((dir "/home/ubuntu/projects/emak8s/"))
+    (dolist (file '("k8s-config.el" "k8s-api.el" "k8s-watch.el" "k8s.el" "k8s-pods.el"))
+      (byte-compile-file (expand-file-name file dir))))
   (load "k8s-config")
   (load "k8s-api")
   (load "k8s-watch")
   (load "k8s")
   (load "k8s-pods")
   (setq k8s-kubeconfig-path "/home/ubuntu/projects/emak8s/test-kubeconfig.yaml")
-  (message "emak8s reloaded"))
+  (message "emak8s reloaded (byte-compiled)"))
 
 
 
