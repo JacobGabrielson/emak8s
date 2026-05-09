@@ -33,7 +33,41 @@
   server            ; string "https://host:port"
   host              ; string
   port              ; integer
-  ca-file)          ; temp file path for the CA cert, or nil
+  ca-file            ; temp file path for the CA cert, or nil
+  client-cert-file   ; temp file path for client cert PEM, or nil
+  client-key-file)   ; temp file path for client key PEM, or nil
+
+;;; ---------------------------------------------------------------------------
+;;; Client-certificate authentication
+;;
+;; Docker Desktop and other clusters authenticate clients by certificate
+;; rather than bearer token. `url.el' has no direct hook for client certs,
+;; so we advise `gnutls-boot-parameters' to inject :keylist when this
+;; dynamic variable is bound.
+
+(defvar k8s--client-cert nil
+  "(KEY-FILE . CERT-FILE) for the in-flight TLS handshake, or nil.
+Bound dynamically around `url-retrieve-synchronously' calls so the
+GnuTLS handshake includes a client certificate.  Order matches GnuTLS's
+:keylist convention: key file first, certificate file second.")
+
+(defvar k8s-tls-priority "NORMAL:-VERS-TLS1.3"
+  "GnuTLS priority string used for K8s API connections.
+TLS 1.3 is disabled because Emacs's GnuTLS does not reliably present
+client certificates during a 1.3 handshake — the server then sees the
+request as `system:anonymous'.  TLS 1.2 with cert auth works correctly.")
+
+(defun k8s--gnutls-boot-parameters-advice (orig-fn &rest args)
+  "Inject `k8s--client-cert' as :keylist into GnuTLS boot parameters."
+  (let ((params (apply orig-fn args)))
+    (when k8s--client-cert
+      (setq params (plist-put params :keylist
+                              (list (list (car k8s--client-cert)
+                                          (cdr k8s--client-cert))))))
+    params))
+
+(advice-add 'gnutls-boot-parameters :around
+            #'k8s--gnutls-boot-parameters-advice)
 
 ;;; ---------------------------------------------------------------------------
 ;;; K8s API
@@ -54,7 +88,22 @@ Returns a `k8s-connection' struct."
                         (set-buffer-multibyte nil)
                         (insert ca-pem))
                       (cl-pushnew f gnutls-trustfiles :test #'string=)
-                      f))))
+                      f)))
+         ;; Write client cert and key to temp files (for cert-based auth)
+         (cert-pem (k8s-user-client-cert-pem user))
+         (key-pem (k8s-user-client-key-pem user))
+         (client-cert-file
+          (when cert-pem
+            (let ((f (make-temp-file "k8s-cert-" nil ".pem")))
+              (with-temp-file f (set-buffer-multibyte nil) (insert cert-pem))
+              (set-file-modes f #o600)
+              f)))
+         (client-key-file
+          (when key-pem
+            (let ((f (make-temp-file "k8s-key-" nil ".pem")))
+              (with-temp-file f (set-buffer-multibyte nil) (insert key-pem))
+              (set-file-modes f #o600)
+              f))))
     (message "emak8s: connecting to %s:%d ..." (car host-port) (cdr host-port))
     (k8s-connection--new
      :config config
@@ -63,7 +112,9 @@ Returns a `k8s-connection' struct."
      :server server
      :host (car host-port)
      :port (cdr host-port)
-     :ca-file ca-file)))
+     :ca-file ca-file
+     :client-cert-file client-cert-file
+     :client-key-file client-key-file)))
 
 (defun k8s--do-get (url)
   "Perform a single GET to URL, return parsed JSON or nil on failure."
@@ -98,6 +149,8 @@ Retries once on transient failures (truncated response, timeout)."
   (let* ((server (k8s-connection-server conn))
          (url (concat server path))
          (user (k8s-connection-user conn))
+         (cert-file (k8s-connection-client-cert-file conn))
+         (key-file (k8s-connection-client-key-file conn))
          ;; Set auth headers
          (url-request-extra-headers
           (append
@@ -110,7 +163,10 @@ Retries once on transient failures (truncated response, timeout)."
          (gnutls-verify-error nil)
          (network-security-level 'low)
          (url-http-attempt-keepalives nil)
-         (url-gateway-method 'native))
+         (url-gateway-method 'native)
+         ;; Inject client cert into the TLS handshake (Docker Desktop, etc.)
+         (k8s--client-cert (and cert-file key-file (cons key-file cert-file)))
+         (gnutls-algorithm-priority k8s-tls-priority))
     (or (k8s--do-get url)
         ;; Retry once on failure
         (progn
@@ -124,6 +180,8 @@ Returns the parsed JSON response."
   (let* ((server (k8s-connection-server conn))
          (url (concat server path))
          (user (k8s-connection-user conn))
+         (cert-file (k8s-connection-client-cert-file conn))
+         (key-file (k8s-connection-client-key-file conn))
          (url-request-method "DELETE")
          (url-request-extra-headers
           (append
@@ -135,7 +193,9 @@ Returns the parsed JSON response."
          (gnutls-verify-error nil)
          (network-security-level 'low)
          (url-http-attempt-keepalives nil)
-         (url-gateway-method 'native))
+         (url-gateway-method 'native)
+         (k8s--client-cert (and cert-file key-file (cons key-file cert-file)))
+         (gnutls-algorithm-priority k8s-tls-priority))
     (message "emak8s: DELETE %s ..." path)
     (let ((buf (url-retrieve-synchronously url t nil 60)))
       (when buf
@@ -207,6 +267,8 @@ Returns the raw response body as a string (for non-JSON endpoints like logs)."
   (let* ((server (k8s-connection-server conn))
          (url (concat server path))
          (user (k8s-connection-user conn))
+         (cert-file (k8s-connection-client-cert-file conn))
+         (key-file (k8s-connection-client-key-file conn))
          (url-request-extra-headers
           (append
            (when (k8s-user-token user)
@@ -218,6 +280,8 @@ Returns the raw response body as a string (for non-JSON endpoints like logs)."
          (network-security-level 'low)
          (url-http-attempt-keepalives nil)
          (url-gateway-method 'native)
+         (k8s--client-cert (and cert-file key-file (cons key-file cert-file)))
+         (gnutls-algorithm-priority k8s-tls-priority)
          (buf (url-retrieve-synchronously url t nil 60)))
     (when buf
       (unwind-protect

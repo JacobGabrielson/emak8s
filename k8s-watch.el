@@ -216,6 +216,8 @@ and REMAINING is the incomplete trailing line."
          (host (k8s-connection-host conn))
          (port (k8s-connection-port conn))
          (token (k8s-user-token (k8s-connection-user conn)))
+         (cert-file (k8s-connection-client-cert-file conn))
+         (key-file (k8s-connection-client-key-file conn))
          (path (k8s-watch-path watch))
          (rv (k8s-watch-resource-version watch))
          (query (if rv
@@ -224,8 +226,15 @@ and REMAINING is the incomplete trailing line."
                   (format "%s?watch=true" path)))
          (buf (generate-new-buffer " *k8s-watch*"))
          (gnutls-verify-error nil)
-         (proc (open-network-stream "k8s-watch" buf host port
-                                    :type 'tls)))
+         ;; Force TLS 1.2 — Emacs's GnuTLS doesn't reliably present client
+         ;; certificates during a 1.3 handshake.  See `k8s-tls-priority'.
+         (gnutls-algorithm-priority k8s-tls-priority)
+         (proc (apply #'open-network-stream "k8s-watch" buf host port
+                      :type 'tls
+                      (when (and cert-file key-file)
+                        ;; :client-certificate is (KEY-FILE CERT-FILE)
+                        (list :client-certificate
+                              (list key-file cert-file))))))
     (unless proc
       (kill-buffer buf)
       (error "Failed to connect to %s:%d" host port))
@@ -241,13 +250,14 @@ and REMAINING is the incomplete trailing line."
                           (lambda (p event)
                             (k8s-watch--sentinel watch p event)))
     ;; Send HTTP request
-    (let ((request (format (concat "GET %s HTTP/1.1\r\n"
-                                   "Host: %s:%d\r\n"
-                                   "Authorization: Bearer %s\r\n"
-                                   "Accept: application/json\r\n"
-                                   "User-Agent: emak8s/0.1\r\n"
-                                   "\r\n")
-                           query host port token)))
+    (let ((request (concat
+                    (format "GET %s HTTP/1.1\r\n" query)
+                    (format "Host: %s:%d\r\n" host port)
+                    (when token
+                      (format "Authorization: Bearer %s\r\n" token))
+                    "Accept: application/json\r\n"
+                    "User-Agent: emak8s/0.1\r\n"
+                    "\r\n")))
       (process-send-string proc request))
     (message "emak8s watch: connected to %s" path)
     watch))
