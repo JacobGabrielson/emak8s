@@ -299,7 +299,7 @@ Shows Terminating when deletionTimestamp is set (like kubectl does)."
       (k8s-pods-mode)
       (k8s--ensure-connection)
       (setq k8s--api-path-fn
-            (lambda (ns) (k8s--list-path 'pod ns)))
+            (lambda (ns) (k8s--list-path 'pods ns)))
       (k8s--pods-refresh))
     (pop-to-buffer buf)))
 

@@ -212,27 +212,28 @@ Returns the parsed JSON response."
           (kill-buffer buf))))))
 
 (defvar k8s--list-api-paths
-  '((pod         "/api/v1/pods"
-                 "/api/v1/namespaces/%s/pods")
-    (deployment  "/apis/apps/v1/deployments"
-                 "/apis/apps/v1/namespaces/%s/deployments")
-    (service     "/api/v1/services"
-                 "/api/v1/namespaces/%s/services")
-    (statefulset "/apis/apps/v1/statefulsets"
-                 "/apis/apps/v1/namespaces/%s/statefulsets")
-    (daemonset   "/apis/apps/v1/daemonsets"
-                 "/apis/apps/v1/namespaces/%s/daemonsets")
-    (job         "/apis/batch/v1/jobs"
-                 "/apis/batch/v1/namespaces/%s/jobs")
-    (cronjob     "/apis/batch/v1/cronjobs"
-                 "/apis/batch/v1/namespaces/%s/cronjobs")
-    (configmap   "/api/v1/configmaps"
-                 "/api/v1/namespaces/%s/configmaps")
-    (secret      "/api/v1/secrets"
-                 "/api/v1/namespaces/%s/secrets")
-    (ingress     "/apis/networking.k8s.io/v1/ingresses"
-                 "/apis/networking.k8s.io/v1/namespaces/%s/ingresses"))
-  "Alist mapping resource types to (ALL-PATH NAMESPACED-PATH-TEMPLATE).")
+  '((pods         "/api/v1/pods"
+                  "/api/v1/namespaces/%s/pods")
+    (deployments  "/apis/apps/v1/deployments"
+                  "/apis/apps/v1/namespaces/%s/deployments")
+    (services     "/api/v1/services"
+                  "/api/v1/namespaces/%s/services")
+    (statefulsets "/apis/apps/v1/statefulsets"
+                  "/apis/apps/v1/namespaces/%s/statefulsets")
+    (daemonsets   "/apis/apps/v1/daemonsets"
+                  "/apis/apps/v1/namespaces/%s/daemonsets")
+    (jobs         "/apis/batch/v1/jobs"
+                  "/apis/batch/v1/namespaces/%s/jobs")
+    (cronjobs     "/apis/batch/v1/cronjobs"
+                  "/apis/batch/v1/namespaces/%s/cronjobs")
+    (configmaps   "/api/v1/configmaps"
+                  "/api/v1/namespaces/%s/configmaps")
+    (secrets      "/api/v1/secrets"
+                  "/api/v1/namespaces/%s/secrets")
+    (ingresses    "/apis/networking.k8s.io/v1/ingresses"
+                  "/apis/networking.k8s.io/v1/namespaces/%s/ingresses"))
+  "Alist mapping resource types (plural) to (ALL-PATH NAMESPACED-PATH-TEMPLATE).
+Keys are plural to match `k8s--define-view's macro name convention.")
 
 (defun k8s--list-path (type &optional namespace)
   "Return the API list path for resource TYPE, optionally in NAMESPACE."
